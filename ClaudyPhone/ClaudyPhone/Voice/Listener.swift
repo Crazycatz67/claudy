@@ -16,6 +16,16 @@ final class Listener {
     private var latest = ""
     private(set) var isListening = false
 
+    // "Hey Claudy" mode: listen continuously (on the phone only) for the wake phrase, then the request.
+    private(set) var isWakeListening = false
+    private var onWake: () -> Void = {}
+    private var onCommand: (String) -> Void = { _ in }
+    private var woke = false
+    private var lastChange = Date()
+    private var wakeStarted = Date()
+    private var wakeTimer: Task<Void, Never>?
+    static let wakePhrases = ["hey claudy", "hey claudie", "hey cloudy", "hey clody", "hey claude e", "hey claude"]
+
     /// Asks iOS for speech and microphone permission (first time only).
     func permitted() async -> Bool {
         let speech = await withCheckedContinuation { (done: CheckedContinuation<Bool, Never>) in
@@ -62,8 +72,10 @@ final class Listener {
         task = recognizer.recognitionTask(with: request) { [weak self] result, _ in
             guard let text = result?.bestTranscription.formattedString else { return }
             Task { @MainActor in
-                self?.latest = text
-                self?.onPartial(text)
+                guard let self else { return }
+                if text != self.latest { self.lastChange = Date() }
+                self.latest = text
+                if self.isWakeListening { self.checkWake(text) } else { self.onPartial(text) }
             }
         }
         isListening = true
@@ -95,5 +107,72 @@ final class Listener {
         task = nil
         request = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+
+    // MARK: Hey Claudy
+
+    /// Starts listening for "Hey Claudy". Returns an error message if it can't start.
+    func startWake(onWake: @escaping () -> Void, onCommand: @escaping (String) -> Void) -> String? {
+        guard !isListening else { return nil }
+        self.onWake = onWake
+        self.onCommand = onCommand
+        if let problem = start() { return problem }
+        isWakeListening = true
+        woke = false
+        wakeStarted = Date()
+        lastChange = Date()
+        wakeTimer?.cancel()
+        wakeTimer = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(300))
+                self?.wakeTick()
+            }
+        }
+        return nil
+    }
+
+    func stopWake() {
+        wakeTimer?.cancel()
+        wakeTimer = nil
+        guard isWakeListening else { return }
+        isWakeListening = false
+        cancel()
+    }
+
+    private func checkWake(_ text: String) {
+        guard !woke, Self.command(after: text) != nil else { return }
+        woke = true
+        lastChange = Date()
+        onWake()
+    }
+
+    /// The words after the wake phrase, or nil if the phrase wasn't said.
+    private static func command(after text: String) -> String? {
+        let lower = text.lowercased()
+        for phrase in wakePhrases {
+            if let range = lower.range(of: phrase, options: .backwards) {
+                return String(text[range.upperBound...])
+                    .trimmingCharacters(in: CharacterSet.punctuationCharacters.union(.whitespaces))
+            }
+        }
+        return nil
+    }
+
+    private func wakeTick() {
+        guard isWakeListening else { return }
+        let quiet = Date().timeIntervalSince(lastChange)
+        if woke {
+            let command = Self.command(after: latest) ?? ""
+            // Done when you pause for 1.5 s after speaking, or 6 s pass with nothing said.
+            if (!command.isEmpty && quiet > 1.5) || quiet > 6 {
+                stopWake()
+                onCommand(command)
+            }
+        } else if Date().timeIntervalSince(wakeStarted) > 50 {
+            // Start fresh now and then, so the transcript stays short.
+            let wake = onWake, command = onCommand
+            stopWake()
+            _ = startWake(onWake: wake, onCommand: command)
+        }
     }
 }

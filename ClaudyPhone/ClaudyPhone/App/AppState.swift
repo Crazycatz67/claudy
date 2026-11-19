@@ -55,6 +55,11 @@ final class AppState {
     var seenText: [String] = []          // text read on the phone in Inspect mode
     var torchIsOn = false                // auto flashlight
     var watchPaused = false              // open palm pauses the Mac watching
+    var measuring = false                // Inspect: LiDAR measuring on
+    var distanceCM: Double?              // LiDAR distance to the centre
+    var measurement: CameraService.Measurement?
+    var pictureAspect: CGFloat = 16.0 / 9 // camera picture, long side / short side
+    var wakeListening = false            // "Hey Claudy" microphone on
 
     @ObservationIgnored let haptics = Haptics()
     @ObservationIgnored let motion = MotionSensor()
@@ -93,10 +98,12 @@ final class AppState {
         motion.start()
         setUpBrain()
         setUpVision()
+        setUpMeasure()
         listener.onPartial = { [weak self] text in self?.heard = text }
         speaker.onFinished = { [weak self] in
-            guard let self, self.expression == .thinking else { return }
-            self.setExpression(.idle)
+            guard let self else { return }
+            if self.expression == .thinking { self.setExpression(.idle) }
+            self.updateWakeWord()
         }
         IntentBridge.attach(self)
         Task { await blinkLoop() }
@@ -155,6 +162,7 @@ final class AppState {
         note("wake: \(why)")
         link.event("wake")
         updateCamera()
+        updateWakeWord()
     }
 
     func sleep(because why: String) {
@@ -172,6 +180,7 @@ final class AppState {
         pointMark = nil
         cancelTalking()       // microphone off too
         link.event("sleep")
+        updateWakeWord()
         updateCamera()   // asleep = camera off. Phase B3 adds the microphone here too.
     }
 

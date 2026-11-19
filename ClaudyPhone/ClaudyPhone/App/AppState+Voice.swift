@@ -9,6 +9,8 @@ extension AppState {
         wake(because: fromButton ? "Action button" : "hold to talk")
         speaker.stop()
         guard !isListening else { return }
+        listener.stopWake()          // hold-to-talk takes over the microphone
+        wakeListening = false
         Task {
             guard await listener.permitted() else {
                 say("I need microphone and speech permission to hear you. You can allow it in the Settings app.", quiet: true)
@@ -34,6 +36,7 @@ extension AppState {
         Task {
             let text = await listener.stop()
             heard = ""
+            defer { updateWakeWord() }
             guard !text.isEmpty else {
                 setExpression(.idle)
                 showCaption("I didn't catch that.", quiet: true)
@@ -75,6 +78,8 @@ extension AppState {
         showCaption(text, quiet: quiet || quietMode)
         if expression == .thinking { setExpression(.idle) }
         guard !quiet, !quietMode, !text.isEmpty else { return }
+        listener.stopWake()          // don't listen to ourselves
+        wakeListening = false
         speaker.speak(text)
     }
 

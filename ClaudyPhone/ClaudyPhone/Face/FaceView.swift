@@ -17,7 +17,9 @@ struct FaceView: View {
     @State private var dotsShownAt: Date?
 
     private var eyeColor: Color { Color(hex: eyeHex) ?? .cyan }
-    private var cameraOptions: [Bool] { [handGestures, readText, autoTorch] }
+    @AppStorage("wakeWord") private var wakeWord = false
+    @AppStorage("digitalFollow") private var digitalFollow = false
+    private var cameraOptions: [Bool] { [handGestures, readText, autoTorch, digitalFollow] }
     private var inspecting: Bool { state.mode == .inspect && state.isAwake }
 
     var body: some View {
@@ -74,6 +76,7 @@ struct FaceView: View {
         .onChange(of: shareWithMac) { _, on in apply(share: on) }
         .onChange(of: macAddress) { _, address in state.link.restart(manualAddress: address) }
         .onChange(of: cameraOptions) { state.updateCamera() }
+        .onChange(of: wakeWord) { state.updateWakeWord() }
         .onChange(of: state.widget) { flashDots() }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { state.motion.start() }
@@ -104,7 +107,7 @@ struct FaceView: View {
     /// In Inspect mode a tap points at that spot; otherwise it is a normal tap.
     private func tapped(at location: CGPoint, in size: CGSize) {
         guard inspecting else { state.tap(); return }
-        let picture = size.cameraPictureRect
+        let picture = size.cameraPictureRect(aspect: state.pictureAspect)
         guard picture.contains(location) else { state.tap(); return }
         state.point(at: CGPoint(x: (location.x - picture.minX) / picture.width,
                                 y: (location.y - picture.minY) / picture.height))

@@ -16,6 +16,8 @@ struct SettingsView: View {
     @AppStorage("handGestures") private var handGestures = true
     @AppStorage("readText") private var readText = true
     @AppStorage("autoTorch") private var autoTorch = true
+    @AppStorage("wakeWord") private var wakeWord = false
+    @AppStorage("digitalFollow") private var digitalFollow = false
 
     private let presets = [Color.defaultEyeHex, "#FFFFFF", "#8AB4FF", "#B98CFF", "#FF8AD8", "#9CFF8A", "#FFD166"]
 
@@ -49,6 +51,7 @@ struct SettingsView: View {
                     Toggle("Hand gestures", isOn: $handGestures)
                     Toggle("Read text in Inspect mode", isOn: $readText)
                     Toggle("Auto flashlight in Inspect mode", isOn: $autoTorch)
+                    Toggle("Digital follow (keep my hands centred for the Mac)", isOn: $digitalFollow)
                     Button(state.mode == .inspect ? "Back to Buddy mode" : "Inspect mode (back camera)") {
                         state.setMode(state.mode == .inspect ? .buddy : .inspect)
                         dismiss()
@@ -67,12 +70,13 @@ struct SettingsView: View {
                         }
                     }
                     LabeledContent("Speed") { Slider(value: $voiceSpeed, in: 0...1) }
+                    Toggle("Listen for \"Hey Claudy\"", isOn: $wakeWord)
                     Toggle("Quiet mode (captions and buzzes only)", isOn: $quietMode)
                     Button("Try the voice") { state.say("Hi Farhan, I'm Claudy. How does this sound?", quiet: false) }
                 } header: {
                     Text("Voice")
                 } footer: {
-                    Text("Hold the face to talk to Claudy; let go to send. Tap while it talks to stop it. For nicer voices, download Enhanced ones in the iPhone Settings app: Accessibility, Spoken Content, Voices.")
+                    Text("Hey Claudy: while this is on and Claudy is awake, the microphone listens on the phone for the wake phrase (the orange dot shows it). It stops while Claudy sleeps or talks. Or hold the face to talk; let go to send. Tap while it talks to stop it. For nicer voices, download Enhanced ones in the iPhone Settings app: Accessibility, Spoken Content, Voices.")
                 }
 
                 Section {

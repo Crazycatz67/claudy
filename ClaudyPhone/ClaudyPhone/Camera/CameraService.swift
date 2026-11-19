@@ -6,7 +6,8 @@ import CoreImage
 import QuartzCore
 import UIKit
 
-enum CameraSide: String, Sendable { case front, back }
+/// front = selfie camera; back = all back lenses with zoom; depth = back camera with LiDAR (measuring).
+enum CameraSide: String, Sendable { case front, back, depth }
 
 final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
                            AVCapturePhotoCaptureDelegate, @unchecked Sendable {
@@ -17,6 +18,11 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     var onHands: @MainActor @Sendable (HandSighting) -> Void = { _ in }
     var onText: @MainActor @Sendable ([String]) -> Void = { _ in }
     var onTorch: @MainActor @Sendable (Bool) -> Void = { _ in }
+    var onDistance: @MainActor @Sendable (Double?) -> Void = { _ in }      // centimetres to the centre
+    var onMeasure: @MainActor @Sendable (Measurement?) -> Void = { _ in }
+    var onAspect: @MainActor @Sendable (CGFloat) -> Void = { _ in }        // long side / short side
+
+    struct Measurement: Sendable { let widthMM: Double; let heightMM: Double; let distanceCM: Double }
     var onPhoto: @MainActor @Sendable (String, Data, Int, Int) -> Void = { _, _, _, _ in }
     var onLenses: @MainActor @Sendable ([Lens]) -> Void = { _ in }
 
@@ -29,6 +35,13 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private let queue = DispatchQueue(label: "claudy.camera")
     private let videoOutput = AVCaptureVideoDataOutput()
     private let photoOutput = AVCapturePhotoOutput()
+    private let depthOutput = AVCaptureDepthDataOutput()
+    private var depthMap: CVPixelBuffer?        // latest LiDAR depth, metres, sensor orientation
+    private var lastDistance: CFTimeInterval = 0
+    private var distanceCM: Double?
+    private var rotationAngle: CGFloat = 90
+    private var followCrop: CGRect?             // digital follow: the part of the picture being sent
+    private var digitalFollow = false
     private let faces = FaceFinder()
     private let hands = HandReader()
     private let texts = TextReader()
@@ -57,7 +70,8 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
 
     /// Start (or switch) the camera. `findFaces` = Follow me, `sendFrames` = share with the Mac.
     func run(side newSide: CameraSide, findFaces: Bool, sendFrames: Bool,
-             readHands: Bool = false, readText: Bool = false, autoTorch: Bool = false) {
+             readHands: Bool = false, readText: Bool = false, autoTorch: Bool = false,
+             digitalFollow: Bool = false) {
         queue.async { [self] in
             self.findFaces = findFaces
             self.sendFrames = sendFrames
@@ -65,6 +79,8 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             self.readText = readText
             if self.autoTorch && !autoTorch && torchOn { setTorchNow(0); reportTorch(false) }
             self.autoTorch = autoTorch
+            self.digitalFollow = digitalFollow
+            if !digitalFollow { followCrop = nil }
             if side != newSide { configure(newSide) }
             if !session.isRunning { session.startRunning() }
         }
@@ -124,6 +140,8 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         let found: AVCaptureDevice?
         if newSide == .front {
             found = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front)
+        } else if newSide == .depth {
+            found = AVCaptureDevice.default(.builtInLiDARDepthCamera, for: .video, position: .back)
         } else {
             // A "virtual" camera that hops between ultra-wide, main and telephoto as you zoom.
             found = AVCaptureDevice.default(.builtInTripleCamera, for: .video, position: .back)
@@ -133,7 +151,12 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         guard let found, let newInput = try? AVCaptureDeviceInput(device: found),
               session.canAddInput(newInput) else { return }
         session.addInput(newInput)
-        session.sessionPreset = session.canSetSessionPreset(.hd1280x720) ? .hd1280x720 : .high
+        if newSide != .depth {
+            session.sessionPreset = session.canSetSessionPreset(.hd1280x720) ? .hd1280x720 : .high
+        }
+        if session.outputs.contains(depthOutput) { session.removeOutput(depthOutput) }
+        depthMap = nil
+        distanceCM = nil
 
         if !session.outputs.contains(videoOutput), session.canAddOutput(videoOutput) {
             videoOutput.alwaysDiscardsLateVideoFrames = true
@@ -147,6 +170,7 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             connection.automaticallyAdjustsVideoMirroring = false
             connection.isVideoMirrored = newSide == .front   // selfie view acts like a mirror
         }
+        if newSide == .depth { setUpDepth(found) }
         if (try? found.lockForConfiguration()) != nil {       // 15 fps is plenty, and cooler
             found.activeVideoMinFrameDuration = CMTime(value: 1, timescale: 15)
             found.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: 15)
@@ -162,8 +186,13 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         side = newSide
         rotation = AVCaptureDevice.RotationCoordinator(device: found, previewLayer: nil)
         let lenses = Self.lenses(of: found, side: newSide)
-        let onLenses = onLenses
-        Task { @MainActor in onLenses(lenses) }
+        let dims = CMVideoFormatDescriptionGetDimensions(found.activeFormat.formatDescription)
+        let aspect = CGFloat(max(dims.width, dims.height)) / CGFloat(max(1, min(dims.width, dims.height)))
+        let onLenses = onLenses, onAspect = onAspect
+        Task { @MainActor in
+            onLenses(lenses)
+            onAspect(aspect)
+        }
     }
 
     /// Lens buttons, labelled the way the Camera app does (0.5x, 1x, 4x...).
@@ -202,6 +231,7 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
            connection.isVideoRotationAngleSupported(angle), connection.videoRotationAngle != angle {
             connection.videoRotationAngle = angle
         }
+        rotationAngle = connection.videoRotationAngle
 
         if findFaces, now - lastFaceCheck >= 0.1 {
             lastFaceCheck = now
@@ -250,6 +280,8 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
 
     private func jpeg(from pixels: CVPixelBuffer, longSide: CGFloat) -> (data: Data, width: Int, height: Int)? {
         var image = CIImage(cvPixelBuffer: pixels)
+        if let crop = followCropRect(in: image.extent) { image = image.cropped(to: crop) }
+        image = image.transformed(by: CGAffineTransform(translationX: -image.extent.minX, y: -image.extent.minY))
         let scale = min(1, longSide / max(image.extent.width, image.extent.height))
         if scale < 1 { image = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale)) }
         guard let space = CGColorSpace(name: CGColorSpace.sRGB),
@@ -320,5 +352,126 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         let size = photo.resolvedSettings.photoDimensions
         let onPhoto = onPhoto
         Task { @MainActor in onPhoto(id, data, Int(size.width), Int(size.height)) }
+    }
+}
+
+// MARK: - LiDAR depth: distance and measuring (D1, D2), and digital follow (T3)
+
+extension CameraService: AVCaptureDepthDataOutputDelegate {
+    /// Picks a camera format that comes with LiDAR depth and turns depth on.
+    fileprivate func setUpDepth(_ device: AVCaptureDevice) {
+        let withDepth = device.formats.filter { format in
+            let d = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+            return !format.supportedDepthDataFormats.isEmpty && d.width <= 1920
+        }
+        guard let format = withDepth.max(by: {
+            CMVideoFormatDescriptionGetDimensions($0.formatDescription).width
+                < CMVideoFormatDescriptionGetDimensions($1.formatDescription).width
+        }) else { return }
+        let depthFormat = format.supportedDepthDataFormats
+            .filter { CMFormatDescriptionGetMediaSubType($0.formatDescription) == kCVPixelFormatType_DepthFloat32 }
+            .max { CMVideoFormatDescriptionGetDimensions($0.formatDescription).width
+                    < CMVideoFormatDescriptionGetDimensions($1.formatDescription).width }
+        if (try? device.lockForConfiguration()) != nil {
+            device.activeFormat = format
+            if let depthFormat { device.activeDepthDataFormat = depthFormat }
+            device.unlockForConfiguration()
+        }
+        if session.canAddOutput(depthOutput) {
+            session.addOutput(depthOutput)
+            depthOutput.isFilteringEnabled = true      // fills small holes in the depth picture
+            depthOutput.alwaysDiscardsLateDepthData = true
+            depthOutput.setDelegate(self, callbackQueue: queue)
+        }
+    }
+
+    func depthDataOutput(_ output: AVCaptureDepthDataOutput, didOutput depthData: AVDepthData,
+                         timestamp: CMTime, connection: AVCaptureConnection) {
+        let metres = depthData.depthDataType == kCVPixelFormatType_DepthFloat32
+            ? depthData : depthData.converting(toDepthDataType: kCVPixelFormatType_DepthFloat32)
+        depthMap = metres.depthDataMap
+        let now = CACurrentMediaTime()
+        guard now - lastDistance >= 0.2 else { return }
+        lastDistance = now
+        let z = depth(around: CGPoint(x: 0.5, y: 0.5), radius: 0.03)
+        distanceCM = z.map { $0 * 100 }
+        let onDistance = onDistance, value = distanceCM
+        Task { @MainActor in onDistance(value) }
+    }
+
+    /// Measure the box you dragged (0...1 of the upright picture), assuming it faces the camera.
+    func measure(box: CGRect) {
+        queue.async { [self] in
+            guard let device, side == .depth,
+                  let z = depth(around: CGPoint(x: box.midX, y: box.midY),
+                                radius: max(0.02, min(box.width, box.height) * 0.25)) else {
+                let onMeasure = onMeasure
+                Task { @MainActor in onMeasure(nil) }
+                return
+            }
+            let dims = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
+            let long = Double(max(dims.width, dims.height)), short = Double(min(dims.width, dims.height))
+            let halfLong = tan(Double(device.activeFormat.videoFieldOfView) * .pi / 360)   // field of view: long side
+            let halfShort = halfLong * short / long
+            let portrait = rotationAngle == 90 || rotationAngle == 270
+            let width = box.width * 2 * z * (portrait ? halfShort : halfLong)
+            let height = box.height * 2 * z * (portrait ? halfLong : halfShort)
+            let result = Measurement(widthMM: width * 1000, heightMM: height * 1000, distanceCM: z * 100)
+            let onMeasure = onMeasure
+            Task { @MainActor in onMeasure(result) }
+        }
+    }
+
+    /// Median depth in metres around an upright picture point, or nil if LiDAR has no reading there.
+    fileprivate func depth(around point: CGPoint, radius: CGFloat) -> Double? {
+        guard let map = depthMap else { return nil }
+        // The depth picture stays in the sensor's own (sideways) orientation: turn the point to match.
+        let p: CGPoint
+        switch rotationAngle {
+        case 90: p = CGPoint(x: point.y, y: 1 - point.x)
+        case 180: p = CGPoint(x: 1 - point.x, y: 1 - point.y)
+        case 270: p = CGPoint(x: 1 - point.y, y: point.x)
+        default: p = point
+        }
+        CVPixelBufferLockBaseAddress(map, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(map, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(map) else { return nil }
+        let w = CVPixelBufferGetWidth(map), h = CVPixelBufferGetHeight(map)
+        let row = CVPixelBufferGetBytesPerRow(map) / MemoryLayout<Float32>.size
+        let values = base.assumingMemoryBound(to: Float32.self)
+        let cx = Int(p.x * CGFloat(w)), cy = Int(p.y * CGFloat(h))
+        let r = max(1, Int(radius * CGFloat(min(w, h))))
+        var samples: [Float32] = []
+        for y in Swift.stride(from: max(0, cy - r), to: min(h, cy + r + 1), by: max(1, r / 4)) {
+            for x in Swift.stride(from: max(0, cx - r), to: min(w, cx + r + 1), by: max(1, r / 4)) {
+                let v = values[y * row + x]
+                if v.isFinite && v > 0.05 && v < 5 { samples.append(v) }
+            }
+        }
+        guard !samples.isEmpty else { return nil }
+        samples.sort()
+        return Double(samples[samples.count / 2])
+    }
+
+    /// Digital follow: the part of the picture to send so your hands stay centred, moving smoothly.
+    fileprivate func followCropRect(in extent: CGRect) -> CGRect? {
+        guard digitalFollow, !handBoxes.isEmpty else { return followCrop.map { flip($0, in: extent) } }
+        let union = handBoxes.dropFirst().reduce(handBoxes[0]) { $0.union($1) }
+        let size = max(0.55, min(1, max(union.width, union.height) * 1.8))
+        let target = CGRect(x: min(max(union.midX - size / 2, 0), 1 - size),
+                            y: min(max(union.midY - size / 2, 0), 1 - size), width: size, height: size)
+        let current = followCrop ?? CGRect(x: 0, y: 0, width: 1, height: 1)
+        func mix(_ a: CGFloat, _ b: CGFloat) -> CGFloat { a + (b - a) * 0.25 }
+        let next = CGRect(x: mix(current.minX, target.minX), y: mix(current.minY, target.minY),
+                          width: mix(current.width, target.width), height: mix(current.height, target.height))
+        followCrop = next
+        return flip(next, in: extent)
+    }
+
+    /// 0...1 top-left box to pixel rectangle in Core Image's bottom-left coordinates.
+    private func flip(_ box: CGRect, in extent: CGRect) -> CGRect {
+        CGRect(x: extent.minX + box.minX * extent.width,
+               y: extent.minY + (1 - box.maxY) * extent.height,
+               width: box.width * extent.width, height: box.height * extent.height)
     }
 }

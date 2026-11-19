@@ -10,8 +10,9 @@ struct InspectOverlay: View {
 
     var body: some View {
         ZStack {
+            if state.measuring { MeasureLayer(color: color, size: size) }
             if let mark = state.pointMark {
-                let picture = size.cameraPictureRect
+                let picture = size.cameraPictureRect(aspect: state.pictureAspect)
                 ZStack {
                     Circle().stroke(color, lineWidth: 3).frame(width: 56, height: 56)
                     Circle().fill(color).frame(width: 8, height: 8)
@@ -68,11 +69,16 @@ struct InspectOverlay: View {
                 }
                 HStack(spacing: 12) {
                     Button { state.setMode(.buddy) } label: {
-                        Label("Back to face", systemImage: "face.smiling")
+                        Label("Face", systemImage: "face.smiling")
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(.black.opacity(0.6))
-                    Text("Tap anything to ask what it is")
+                    Button { state.setMeasuring(!state.measuring) } label: {
+                        Label(state.measuring ? "Done" : "Measure", systemImage: "ruler")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(state.measuring ? color.opacity(0.8) : .black.opacity(0.6))
+                    Text(state.measuring ? "Drag a box over the part" : "Tap anything to ask what it is")
                         .font(.footnote)
                         .foregroundStyle(.white.opacity(0.8))
                 }
@@ -80,6 +86,77 @@ struct InspectOverlay: View {
             .frame(maxHeight: .infinity, alignment: .bottom)
             .padding(.bottom, 40)
         }
+    }
+}
+
+/// LiDAR measuring: live distance to the centre, and drag a box to get a size.
+struct MeasureLayer: View {
+    @Environment(AppState.self) private var state
+    var color: Color
+    var size: CGSize
+    @State private var start: CGPoint?
+    @State private var end: CGPoint?
+    @State private var lastBox: CGRect?
+
+    var body: some View {
+        let picture = size.cameraPictureRect(aspect: state.pictureAspect)
+        ZStack {
+            Color.clear
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 8)
+                        .onChanged { drag in
+                            if start == nil { start = drag.startLocation }
+                            end = drag.location
+                        }
+                        .onEnded { _ in
+                            if let box = screenBox {
+                                lastBox = box
+                                state.measure(box: CGRect(x: (box.minX - picture.minX) / picture.width,
+                                                          y: (box.minY - picture.minY) / picture.height,
+                                                          width: box.width / picture.width,
+                                                          height: box.height / picture.height))
+                            }
+                            start = nil
+                            end = nil
+                        }
+                )
+
+            // Centre dot with the live distance.
+            VStack(spacing: 6) {
+                Image(systemName: "plus").font(.title2.weight(.light)).foregroundStyle(color)
+                Text(state.distanceCM.map { String(format: "%.0f cm", $0) } ?? "-- cm")
+                    .font(.system(.headline, design: .rounded)).monospacedDigit()
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(.black.opacity(0.55), in: Capsule())
+                    .foregroundStyle(.white)
+            }
+            .position(x: picture.midX, y: picture.midY + 14)
+            .allowsHitTesting(false)
+
+            if let box = screenBox ?? lastBox {
+                Rectangle()
+                    .stroke(color, style: StrokeStyle(lineWidth: 2, dash: screenBox == nil ? [] : [6, 4]))
+                    .frame(width: box.width, height: box.height)
+                    .position(x: box.midX, y: box.midY)
+                    .allowsHitTesting(false)
+                if screenBox == nil, let m = state.measurement {
+                    Text(String(format: "%.0f × %.0f mm", m.widthMM, m.heightMM))
+                        .font(.system(.subheadline, design: .rounded).weight(.semibold)).monospacedDigit()
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(color.opacity(0.85), in: Capsule())
+                        .foregroundStyle(.black)
+                        .position(x: box.midX, y: max(20, box.minY - 16))
+                        .allowsHitTesting(false)
+                }
+            }
+        }
+    }
+
+    private var screenBox: CGRect? {
+        guard let start, let end else { return nil }
+        return CGRect(x: min(start.x, end.x), y: min(start.y, end.y),
+                      width: abs(end.x - start.x), height: abs(end.y - start.y))
     }
 }
 

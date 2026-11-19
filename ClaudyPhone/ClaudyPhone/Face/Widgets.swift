@@ -77,9 +77,11 @@ struct TimerWidget: View {
     }
 }
 
-/// A radar sweep. The distance reading is a placeholder until phase B5 adds LiDAR.
+/// A radar sweep with the LiDAR distance when the back camera is measuring.
 struct RadarWidget: View {
+    @Environment(AppState.self) private var state
     var color: Color
+    private var distance: Double? { state.distanceCM }
 
     var body: some View {
         VStack(spacing: 16) {
@@ -106,10 +108,11 @@ struct RadarWidget: View {
                 }
                 .frame(width: 210, height: 210)
             }
-            Text("-- cm")
+            Text(distance.map { String(format: "%.0f cm", $0) } ?? "-- cm")
                 .font(.system(size: 34, weight: .semibold, design: .rounded))
+                .monospacedDigit()
                 .foregroundStyle(.white)
-            Text("Real distance arrives with LiDAR in phase B5")
+            Text(distance == nil ? "LiDAR is on the back: swipe up, then tap Measure" : "LiDAR distance")
                 .font(.footnote)
                 .foregroundStyle(.white.opacity(0.6))
         }

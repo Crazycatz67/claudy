@@ -60,6 +60,8 @@ extension AppState {
             if new == .inspect, await !cameraAllowed() { note("inspect: camera permission refused"); return }
             withAnimation(.spring(duration: 0.45)) {
                 mode = new
+                measuring = false
+                measurement = nil
                 pointMark = nil
                 widget = .face
             }
@@ -78,6 +80,7 @@ extension AppState {
             link.stop()
         }
         updateCamera()
+        updateWakeWord()
     }
 
     /// The one place that decides whether the camera runs, and which one.
@@ -85,15 +88,16 @@ extension AppState {
         let connected = link.status.isConnected
         var side: CameraSide?
         if isAwake && sceneActive {
-            if mode == .inspect { side = .back }
+            if mode == .inspect { side = measuring ? .depth : .back }
             else if followEnabled || (shareEnabled && connected) { side = .front }
         }
         if let side {
             camera.run(side: side, findFaces: side == .front && followEnabled,
                        sendFrames: shareEnabled && connected,
                        readHands: gesturesEnabled,
-                       readText: side == .back && readTextEnabled,
-                       autoTorch: side == .back && autoTorchEnabled)
+                       readText: side != .front && readTextEnabled,
+                       autoTorch: side != .front && autoTorchEnabled,
+                       digitalFollow: side == .front && UserDefaults.standard.bool(forKey: "digitalFollow"))
             if !cameraOn { lastFaceSeen = Date() }
             cameraOn = true
             cameraSide = side
@@ -104,6 +108,8 @@ extension AppState {
             seesFace = false
             seenText = []
             torchIsOn = false
+            distanceCM = nil
+            measurement = nil
         }
     }
 
@@ -161,7 +167,7 @@ extension AppState {
     private func sendFrame(_ jpeg: Data, w: Int, h: Int, lens: String, hands: [CGRect]) {
         guard shareEnabled, link.status.isConnected else { return }
         link.send(["type": "frame", "t": Date().timeIntervalSince1970, "mode": mode.rawValue,
-                   "lens": lens, "w": w, "h": h, "distance_cm": NSNull(),
+                   "lens": lens, "w": w, "h": h, "distance_cm": distanceCM.map { $0 as Any } ?? NSNull(),
                    "hands": hands.map { ["x": $0.minX, "y": $0.minY, "w": $0.width, "h": $0.height] },
                    "sharp": NSNull()], jpeg: jpeg)
     }

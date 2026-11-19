@@ -39,9 +39,9 @@ struct CameraPreview: UIViewRepresentable {
 
 extension CGSize {
     /// The rectangle a camera picture fills inside this size without cropping
-    /// (720p frames: tall in portrait, wide in landscape).
-    var cameraPictureRect: CGRect {
-        let aspect: CGFloat = height > width ? 9.0 / 16 : 16.0 / 9
+    /// (tall in portrait, wide in landscape; `long` = long side / short side of the picture).
+    func cameraPictureRect(aspect long: CGFloat = 16.0 / 9) -> CGRect {
+        let aspect: CGFloat = height > width ? 1 / long : long
         var w = width, h = width / aspect
         if h > height { h = height; w = height * aspect }
         return CGRect(x: (width - w) / 2, y: (height - h) / 2, width: w, height: h)
