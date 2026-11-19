@@ -69,6 +69,11 @@ extension AppState {
 
     // MARK: Photos when the Mac is off
 
+    /// Photos runs this on a background thread, so it must not belong to the main thread.
+    private nonisolated static func addPhoto(_ jpeg: Data) -> @Sendable () -> Void {
+        { PHAssetCreationRequest.forAsset().addResource(with: .photo, data: jpeg, options: nil) }
+    }
+
     /// Fail soft: with no brain connected, photos go to the phone's Photos library instead.
     func savePhotoLocally(_ jpeg: Data) {
         Task {
@@ -78,9 +83,7 @@ extension AppState {
                 return
             }
             do {
-                try await PHPhotoLibrary.shared().performChanges {
-                    PHAssetCreationRequest.forAsset().addResource(with: .photo, data: jpeg, options: nil)
-                }
+                try await PHPhotoLibrary.shared().performChanges(Self.addPhoto(jpeg))
                 showCaption("Photo saved to your library.", quiet: true)
             } catch {
                 showCaption("I couldn't save that photo.", quiet: true)

@@ -28,10 +28,7 @@ final class Listener {
 
     /// Asks iOS for speech and microphone permission (first time only).
     func permitted() async -> Bool {
-        let speech = await withCheckedContinuation { (done: CheckedContinuation<Bool, Never>) in
-            SFSpeechRecognizer.requestAuthorization { done.resume(returning: $0 == .authorized) }
-        }
-        guard speech else { return false }
+        guard await Self.speechAuthorized() else { return false }
         return await AVAudioApplication.requestRecordPermission()
     }
 
@@ -58,9 +55,7 @@ final class Listener {
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         input.removeTap(onBus: 0)
-        input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
-            request.append(buffer)
-        }
+        input.installTap(onBus: 0, bufferSize: 1024, format: format, block: Self.feeding(request))
         engine.prepare()
         do { try engine.start() } catch {
             input.removeTap(onBus: 0)
@@ -69,15 +64,14 @@ final class Listener {
         latest = ""
         self.recognizer = recognizer
         self.request = request
-        task = recognizer.recognitionTask(with: request) { [weak self] result, _ in
-            guard let text = result?.bestTranscription.formattedString else { return }
+        task = recognizer.recognitionTask(with: request, resultHandler: Self.transcribing { [weak self] text in
             Task { @MainActor in
                 guard let self else { return }
                 if text != self.latest { self.lastChange = Date() }
                 self.latest = text
                 if self.isWakeListening { self.checkWake(text) } else { self.onPartial(text) }
             }
-        }
+        })
         isListening = true
         return nil
     }
@@ -107,6 +101,26 @@ final class Listener {
         task = nil
         request = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+
+    // MARK: Callbacks iOS calls from background threads
+    // These must not belong to the main thread, or the app stops when iOS calls them.
+
+    private nonisolated static func speechAuthorized() async -> Bool {
+        await withCheckedContinuation { (done: CheckedContinuation<Bool, Never>) in
+            SFSpeechRecognizer.requestAuthorization { status in done.resume(returning: status == .authorized) }
+        }
+    }
+
+    private nonisolated static func feeding(_ request: SFSpeechAudioBufferRecognitionRequest) -> AVAudioNodeTapBlock {
+        { buffer, _ in request.append(buffer) }
+    }
+
+    private nonisolated static func transcribing(_ deliver: @escaping @Sendable (String) -> Void)
+        -> (SFSpeechRecognitionResult?, Error?) -> Void {
+        { result, _ in
+            if let text = result?.bestTranscription.formattedString { deliver(text) }
+        }
     }
 
     // MARK: Hey Claudy
