@@ -10,6 +10,12 @@ struct SettingsView: View {
     @AppStorage("macAddress") private var macAddress = ""
     @AppStorage("followMe") private var followMe = false
     @AppStorage("shareWithMac") private var shareWithMac = false
+    @AppStorage("voiceID") private var voiceID = ""
+    @AppStorage("voiceSpeed") private var voiceSpeed = 0.5
+    @AppStorage("quietMode") private var quietMode = false
+    @AppStorage("handGestures") private var handGestures = true
+    @AppStorage("readText") private var readText = true
+    @AppStorage("autoTorch") private var autoTorch = true
 
     private let presets = [Color.defaultEyeHex, "#FFFFFF", "#8AB4FF", "#B98CFF", "#FF8AD8", "#9CFF8A", "#FFD166"]
 
@@ -40,6 +46,9 @@ struct SettingsView: View {
                 Section {
                     Toggle("Follow me", isOn: $followMe)
                     Toggle("Share camera with my Mac", isOn: $shareWithMac)
+                    Toggle("Hand gestures", isOn: $handGestures)
+                    Toggle("Read text in Inspect mode", isOn: $readText)
+                    Toggle("Auto flashlight in Inspect mode", isOn: $autoTorch)
                     Button(state.mode == .inspect ? "Back to Buddy mode" : "Inspect mode (back camera)") {
                         state.setMode(state.mode == .inspect ? .buddy : .inspect)
                         dismiss()
@@ -47,11 +56,23 @@ struct SettingsView: View {
                 } header: {
                     Text("Camera")
                 } footer: {
-                    Text("Follow me: the eyes look at you; your face is found on this phone only. Share: about 3 small pictures a second go to your own Mac over Wi-Fi, never anywhere else, and the eyes flash red whenever one goes to Claude. Inspect (or swipe up): the back camera looks at your work. The camera is always off while Claudy sleeps.")
+                    Text("Follow me: the eyes look at you; your face is found on this phone only. Share: about 3 small pictures a second go to your own Mac over Wi-Fi, never anywhere else, and the eyes flash red whenever one goes to Claude. Inspect (or swipe up): the back camera looks at your work. Gestures: thumbs up takes a photo, open palm pauses watching, pointing marks \"this one\". The camera is always off while Claudy sleeps.")
                 }
 
-                Section("Voice") {
-                    LabeledContent("Voice", value: "Arrives in phase B3")
+                Section {
+                    Picker("Voice", selection: $voiceID) {
+                        Text("Automatic").tag("")
+                        ForEach(Speaker.voices(), id: \.identifier) { voice in
+                            Text(voice.name).tag(voice.identifier)
+                        }
+                    }
+                    LabeledContent("Speed") { Slider(value: $voiceSpeed, in: 0...1) }
+                    Toggle("Quiet mode (captions and buzzes only)", isOn: $quietMode)
+                    Button("Try the voice") { state.say("Hi Farhan, I'm Claudy. How does this sound?", quiet: false) }
+                } header: {
+                    Text("Voice")
+                } footer: {
+                    Text("Hold the face to talk to Claudy; let go to send. Tap while it talks to stop it. For nicer voices, download Enhanced ones in the iPhone Settings app: Accessibility, Spoken Content, Voices.")
                 }
 
                 Section {

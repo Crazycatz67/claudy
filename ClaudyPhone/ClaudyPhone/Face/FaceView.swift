@@ -11,9 +11,13 @@ struct FaceView: View {
     @AppStorage("followMe") private var followMe = false
     @AppStorage("shareWithMac") private var shareWithMac = false
     @AppStorage("macAddress") private var macAddress = ""
+    @AppStorage("handGestures") private var handGestures = true
+    @AppStorage("readText") private var readText = true
+    @AppStorage("autoTorch") private var autoTorch = true
     @State private var dotsShownAt: Date?
 
     private var eyeColor: Color { Color(hex: eyeHex) ?? .cyan }
+    private var cameraOptions: [Bool] { [handGestures, readText, autoTorch] }
     private var inspecting: Bool { state.mode == .inspect && state.isAwake }
 
     var body: some View {
@@ -69,6 +73,7 @@ struct FaceView: View {
         .onChange(of: followMe) { _, on in apply(followMe: on) }
         .onChange(of: shareWithMac) { _, on in apply(share: on) }
         .onChange(of: macAddress) { _, address in state.link.restart(manualAddress: address) }
+        .onChange(of: cameraOptions) { state.updateCamera() }
         .onChange(of: state.widget) { flashDots() }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { state.motion.start() }
@@ -83,6 +88,7 @@ struct FaceView: View {
         case .light: LightWidget()
         case .timer: TimerWidget(color: eyeColor)
         case .radar: RadarWidget(color: eyeColor)
+        case .level: LevelWidget(color: eyeColor)
         case .crosshair: CrosshairWidget(color: eyeColor)
         }
     }

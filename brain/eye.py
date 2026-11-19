@@ -330,6 +330,9 @@ class Eye:
                 self.task = str(data).strip()
                 self.add_note(f"New task: {self.task}")
                 print(f"\nTask set from the phone: {self.task}")
+            elif name in ("watch_pause", "watch_resume"):   # open-palm gesture on the phone
+                self.watch = name == "watch_resume"
+                print(f"\nWatching {'on' if self.watch else 'paused'} (palm gesture)")
             elif name in ("mode", "gesture", "shake", "confirm"):
                 print(f"\nPhone: {name} {data if data is not None else ''}")
         elif kind == "text_seen" and isinstance(msg.get("lines"), list):

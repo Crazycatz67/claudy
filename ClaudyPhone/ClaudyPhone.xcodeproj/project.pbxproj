@@ -188,9 +188,10 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Claudy;
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "When your Mac is off, Claudy saves the photos you ask for (thumbs up) to your library.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Claudy uses the camera only when you switch it on (Follow me, Inspect, or sharing with your own Mac). It is always off while Claudy sleeps.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Claudy listens only while you hold its face or press the Action button. Speech is turned into text on this phone.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Claudy turns what you say into text on this phone, so it can answer you.";
-				INFOPLIST_KEY_NSCameraUsageDescription = "Claudy uses the camera only when you switch it on (Follow me, Inspect, or sharing with your own Mac). It is always off while Claudy sleeps.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -223,9 +224,10 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Claudy;
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "When your Mac is off, Claudy saves the photos you ask for (thumbs up) to your library.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Claudy uses the camera only when you switch it on (Follow me, Inspect, or sharing with your own Mac). It is always off while Claudy sleeps.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Claudy listens only while you hold its face or press the Action button. Speech is turned into text on this phone.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Claudy turns what you say into text on this phone, so it can answer you.";
-				INFOPLIST_KEY_NSCameraUsageDescription = "Claudy uses the camera only when you switch it on (Follow me, Inspect, or sharing with your own Mac). It is always off while Claudy sleeps.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

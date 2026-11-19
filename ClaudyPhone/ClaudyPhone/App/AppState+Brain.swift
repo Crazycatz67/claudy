@@ -18,7 +18,9 @@ extension AppState {
             self?.lenses = lenses
             self?.zoom = lenses.dropFirst().first?.zoom ?? 1   // starts on the main (1x) lens
         }
-        camera.onFrame = { [weak self] data, w, h, lens in self?.sendFrame(data, w: w, h: h, lens: lens) }
+        camera.onFrame = { [weak self] data, w, h, lens, hands in
+            self?.sendFrame(data, w: w, h: h, lens: lens, hands: hands)
+        }
         camera.onPhoto = { [weak self] id, data, w, h in self?.sendPhoto(id, data, w: w, h: h) }
         link.helloMode = { [weak self] in self?.mode.rawValue ?? "buddy" }
         link.onMessage = { [weak self] type, json in self?.handle(type, json) }
@@ -88,7 +90,10 @@ extension AppState {
         }
         if let side {
             camera.run(side: side, findFaces: side == .front && followEnabled,
-                       sendFrames: shareEnabled && connected)
+                       sendFrames: shareEnabled && connected,
+                       readHands: gesturesEnabled,
+                       readText: side == .back && readTextEnabled,
+                       autoTorch: side == .back && autoTorchEnabled)
             if !cameraOn { lastFaceSeen = Date() }
             cameraOn = true
             cameraSide = side
@@ -97,6 +102,8 @@ extension AppState {
             cameraOn = false
             cameraSide = nil
             seesFace = false
+            seenText = []
+            torchIsOn = false
         }
     }
 
@@ -151,15 +158,17 @@ extension AppState {
 
     // MARK: Pictures out (only to your own Mac)
 
-    private func sendFrame(_ jpeg: Data, w: Int, h: Int, lens: String) {
+    private func sendFrame(_ jpeg: Data, w: Int, h: Int, lens: String, hands: [CGRect]) {
         guard shareEnabled, link.status.isConnected else { return }
         link.send(["type": "frame", "t": Date().timeIntervalSince1970, "mode": mode.rawValue,
-                   "lens": lens, "w": w, "h": h, "distance_cm": NSNull(), "hands": [Any](),
+                   "lens": lens, "w": w, "h": h, "distance_cm": NSNull(),
+                   "hands": hands.map { ["x": $0.minX, "y": $0.minY, "w": $0.width, "h": $0.height] },
                    "sharp": NSNull()], jpeg: jpeg)
     }
 
     private func sendPhoto(_ id: String, _ jpeg: Data, w: Int, h: Int) {
         haptics.play(.click)
+        guard link.status.isConnected else { savePhotoLocally(jpeg); return }
         link.send(["type": "photo", "id": id, "w": w, "h": h, "distance_cm": NSNull()], jpeg: jpeg)
     }
 

@@ -13,7 +13,10 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     // Callbacks, set once before start(). All are delivered on the main actor.
     var onFace: @MainActor @Sendable (CGPoint?) -> Void = { _ in }
     var onRate: @MainActor @Sendable (Int) -> Void = { _ in }
-    var onFrame: @MainActor @Sendable (Data, Int, Int, String) -> Void = { _, _, _, _ in }
+    var onFrame: @MainActor @Sendable (Data, Int, Int, String, [CGRect]) -> Void = { _, _, _, _, _ in }
+    var onHands: @MainActor @Sendable (HandSighting) -> Void = { _ in }
+    var onText: @MainActor @Sendable ([String]) -> Void = { _ in }
+    var onTorch: @MainActor @Sendable (Bool) -> Void = { _ in }
     var onPhoto: @MainActor @Sendable (String, Data, Int, Int) -> Void = { _, _, _, _ in }
     var onLenses: @MainActor @Sendable ([Lens]) -> Void = { _ in }
 
@@ -27,6 +30,17 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private let videoOutput = AVCaptureVideoDataOutput()
     private let photoOutput = AVCapturePhotoOutput()
     private let faces = FaceFinder()
+    private let hands = HandReader()
+    private let texts = TextReader()
+    private var readHands = false
+    private var readText = false
+    private var autoTorch = false
+    private var lastHands: CFTimeInterval = 0
+    private var lastText: CFTimeInterval = 0
+    private var lastLight: CFTimeInterval = 0
+    private var darkSince: CFTimeInterval?
+    private var torchOn = false
+    private var handBoxes: [CGRect] = []
     private let ciContext = CIContext()
     private var device: AVCaptureDevice?
     private var input: AVCaptureDeviceInput?
@@ -42,10 +56,15 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private var pendingPhotoIDs: [Int64: String] = [:]
 
     /// Start (or switch) the camera. `findFaces` = Follow me, `sendFrames` = share with the Mac.
-    func run(side newSide: CameraSide, findFaces: Bool, sendFrames: Bool) {
+    func run(side newSide: CameraSide, findFaces: Bool, sendFrames: Bool,
+             readHands: Bool = false, readText: Bool = false, autoTorch: Bool = false) {
         queue.async { [self] in
             self.findFaces = findFaces
             self.sendFrames = sendFrames
+            self.readHands = readHands
+            self.readText = readText
+            if self.autoTorch && !autoTorch && torchOn { setTorchNow(0); reportTorch(false) }
+            self.autoTorch = autoTorch
             if side != newSide { configure(newSide) }
             if !session.isRunning { session.startRunning() }
         }
@@ -56,7 +75,10 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         queue.async { [self] in
             if session.isRunning { session.stopRunning() }
             setTorchNow(0)
+            if torchOn { reportTorch(false) }
+            darkSince = nil
             misses = 0
+            handBoxes = []
             deliverFace(nil)
         }
     }
@@ -199,10 +221,30 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             }
         }
 
+        if readHands, now - lastHands >= 0.2 {      // 5 times a second
+            lastHands = now
+            let sighting = hands.read(pixels)
+            handBoxes = sighting.boxes
+            let onHands = onHands
+            Task { @MainActor in onHands(sighting) }
+        }
+
+        if readText, now - lastText >= 0.5 {
+            lastText = now
+            let lines = texts.read(pixels)
+            let onText = onText
+            Task { @MainActor in onText(lines) }
+        }
+
+        if autoTorch, side == .back, now - lastLight >= 0.5 {
+            lastLight = now
+            adjustTorch(brightness: Self.brightness(of: pixels), now: now)
+        }
+
         if sendFrames, now - lastSend >= 0.33, let jpeg = jpeg(from: pixels, longSide: 1280) {
             lastSend = now
-            let onFrame = onFrame, lens = side == .front ? "front" : "back"
-            Task { @MainActor in onFrame(jpeg.data, jpeg.width, jpeg.height, lens) }
+            let onFrame = onFrame, lens = side == .front ? "front" : "back", boxes = handBoxes
+            Task { @MainActor in onFrame(jpeg.data, jpeg.width, jpeg.height, lens, boxes) }
         }
     }
 
@@ -215,6 +257,53 @@ final class CameraService: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                   options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.6])
         else { return nil }
         return (data, Int(image.extent.width), Int(image.extent.height))
+    }
+
+    /// Auto flashlight: on after 2 seconds of a dark picture, brighter the darker it is;
+    /// off again only when the room is clearly bright (so the torch's own light doesn't flicker it).
+    private func adjustTorch(brightness: Double, now: CFTimeInterval) {
+        if !torchOn {
+            if brightness < 0.18 {
+                if let since = darkSince, now - since >= 2 {
+                    setTorchNow(max(0.3, min(1, (0.18 - brightness) * 8)))
+                    torchOn = true
+                    reportTorch(true)
+                } else if darkSince == nil {
+                    darkSince = now
+                }
+            } else {
+                darkSince = nil
+            }
+        } else if brightness > 0.8 {
+            setTorchNow(0)
+            torchOn = false
+            darkSince = nil
+            reportTorch(false)
+        }
+    }
+
+    private func reportTorch(_ on: Bool) {
+        torchOn = on
+        let onTorch = onTorch
+        Task { @MainActor in onTorch(on) }
+    }
+
+    /// Average brightness 0...1 from a sample of the picture's light (luma) values.
+    private static func brightness(of pixels: CVPixelBuffer) -> Double {
+        CVPixelBufferLockBaseAddress(pixels, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixels, .readOnly) }
+        guard CVPixelBufferIsPlanar(pixels), let base = CVPixelBufferGetBaseAddressOfPlane(pixels, 0) else { return 0.5 }
+        let width = CVPixelBufferGetWidthOfPlane(pixels, 0), height = CVPixelBufferGetHeightOfPlane(pixels, 0)
+        let stride = CVPixelBufferGetBytesPerRowOfPlane(pixels, 0)
+        let bytes = base.assumingMemoryBound(to: UInt8.self)
+        var total = 0, count = 0
+        for y in Swift.stride(from: 0, to: height, by: 16) {
+            for x in Swift.stride(from: 0, to: width, by: 16) {
+                total += Int(bytes[y * stride + x])
+                count += 1
+            }
+        }
+        return count > 0 ? Double(total) / Double(count) / 255 : 0.5
     }
 
     private func deliverFace(_ point: CGPoint?) {

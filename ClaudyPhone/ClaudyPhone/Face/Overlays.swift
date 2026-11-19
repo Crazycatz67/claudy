@@ -32,6 +32,28 @@ struct InspectOverlay: View {
                 .allowsHitTesting(false)
 
             VStack(spacing: 14) {
+                if !state.seenText.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Label("Reading", systemImage: "text.viewfinder")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(color)
+                        ForEach(state.seenText, id: \.self) { line in
+                            Text(line).font(.system(.callout, design: .monospaced)).foregroundStyle(.white)
+                        }
+                    }
+                    .padding(12)
+                    .frame(maxWidth: 360, alignment: .leading)
+                    .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .allowsHitTesting(false)
+                }
+                if state.torchIsOn {
+                    Label("Flashlight on (it was dark)", systemImage: "flashlight.on.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.yellow)
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .background(.black.opacity(0.55), in: Capsule())
+                        .allowsHitTesting(false)
+                }
                 if state.lenses.count > 1 {
                     HStack(spacing: 10) {
                         ForEach(state.lenses, id: \.self) { lens in

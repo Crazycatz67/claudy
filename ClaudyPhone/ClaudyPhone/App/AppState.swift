@@ -6,7 +6,7 @@ import Observation
 
 /// The screens you swipe between. The face is always first.
 enum Widget: Int, CaseIterable, Identifiable {
-    case face, light, timer, radar, crosshair
+    case face, light, timer, radar, level, crosshair
     var id: Int { rawValue }
     var title: String {
         switch self {
@@ -14,6 +14,7 @@ enum Widget: Int, CaseIterable, Identifiable {
         case .light: "Light"
         case .timer: "Timer"
         case .radar: "Radar"
+        case .level: "Level"
         case .crosshair: "Crosshair"
         }
     }
@@ -51,6 +52,9 @@ final class AppState {
     var lightColor: Color?               // screen light set by the Mac
     var isListening = false              // microphone on (hold to talk)
     var heard = ""                       // words heard so far
+    var seenText: [String] = []          // text read on the phone in Inspect mode
+    var torchIsOn = false                // auto flashlight
+    var watchPaused = false              // open palm pauses the Mac watching
 
     @ObservationIgnored let haptics = Haptics()
     @ObservationIgnored let motion = MotionSensor()
@@ -64,6 +68,9 @@ final class AppState {
     @ObservationIgnored var lastFaceSeen = Date()
     @ObservationIgnored var captionTask: Task<Void, Never>?
     @ObservationIgnored var flashTask: Task<Void, Never>?
+    @ObservationIgnored var gestureCandidate: String?
+    @ObservationIgnored var gestureStreak = 0
+    @ObservationIgnored var lastGestureAt = Date.distantPast
 
     /// What the face shows right now.
     var shown: Expression { isAwake ? (reaction ?? expression) : .sleeping }
@@ -85,6 +92,7 @@ final class AppState {
         motion.onPickUp = { [weak self] in self?.wake(because: "picked up") }
         motion.start()
         setUpBrain()
+        setUpVision()
         listener.onPartial = { [weak self] text in self?.heard = text }
         speaker.onFinished = { [weak self] in
             guard let self, self.expression == .thinking else { return }

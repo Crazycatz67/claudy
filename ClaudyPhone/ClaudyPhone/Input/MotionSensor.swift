@@ -11,6 +11,7 @@ final class MotionSensor {
     var onPickUp: @MainActor () -> Void = {}
     private(set) var readout = "motion off"     // shown in the debug menu
     private(set) var isFaceDown = false
+    private(set) var gravity = (x: 0.0, y: 0.0, z: -1.0)   // for the level widget
 
     private let manager = CMMotionManager()
     private var shakeTimes: [TimeInterval] = []
@@ -43,6 +44,7 @@ final class MotionSensor {
 
     private func handle(_ m: CMDeviceMotion) {
         let g = m.gravity, a = m.userAcceleration, now = m.timestamp
+        gravity = (g.x, g.y, g.z)
         let force = (a.x * a.x + a.y * a.y + a.z * a.z).squareRoot()   // in g, gravity removed
         readout = String(format: "tilt z %.2f   force %.2f g", g.z, force)
 

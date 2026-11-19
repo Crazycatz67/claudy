@@ -1,4 +1,4 @@
-// Widgets.swift: the carousel screens besides the face: screen light, timer, radar
+// Widgets.swift: the carousel screens besides the face: screen light, timer, radar, level
 // (real distance comes with LiDAR in phase B5) and crosshair.
 import SwiftUI
 
@@ -150,5 +150,54 @@ struct CrosshairWidget: View {
                 .allowsHitTesting(false)
         }
         .coordinateSpace(.named("crosshair"))
+    }
+}
+
+/// A bubble level. Lying flat: a bubble that centres when level. Standing up: a tilt line.
+struct LevelWidget: View {
+    @Environment(AppState.self) private var state
+    var color: Color
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1.0 / 20)) { _ in
+            let g = state.motion.gravity
+            let flat = abs(g.z) > 0.7
+            VStack(spacing: 22) {
+                if flat {
+                    let tilt = acos(min(1, abs(g.z))) * 180 / .pi
+                    ZStack {
+                        Circle().stroke(color.opacity(0.3), lineWidth: 2).frame(width: 220, height: 220)
+                        Circle().stroke(color.opacity(0.5), lineWidth: 2).frame(width: 40, height: 40)
+                        Circle()
+                            .fill(tilt < 1 ? Color.green : color)
+                            .frame(width: 34, height: 34)
+                            .offset(x: -g.x * 300, y: g.y * 300)
+                            .animation(.easeOut(duration: 0.1), value: g.x)
+                    }
+                    .frame(width: 220, height: 220)
+                    .clipShape(Circle())
+                    reading(tilt)
+                } else {
+                    let roll = atan2(g.x, -g.y) * 180 / .pi
+                    ZStack {
+                        Rectangle().fill(color.opacity(0.25)).frame(width: 260, height: 2)
+                        Rectangle()
+                            .fill(abs(roll) < 1 ? Color.green : color)
+                            .frame(width: 260, height: 4)
+                            .rotationEffect(.degrees(-roll))
+                    }
+                    .frame(height: 220)
+                    reading(abs(roll))
+                }
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func reading(_ degrees: Double) -> some View {
+        Text(String(format: "%.1f°", degrees))
+            .font(.system(size: 44, weight: .semibold, design: .rounded))
+            .monospacedDigit()
+            .foregroundStyle(degrees < 1 ? .green : .white)
     }
 }
