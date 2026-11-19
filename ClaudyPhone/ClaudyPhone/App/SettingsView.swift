@@ -99,6 +99,29 @@ struct SettingsView: View {
                     Text("Leave the address empty to find the Mac by itself. Type it only if that fails (some campus Wi-Fi blocks finding devices).")
                 }
 
+                Section {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 130))], spacing: 10) {
+                        ForEach(Self.presets, id: \.id) { preset in
+                            Button { state.setTask(preset.id) } label: {
+                                Label(preset.name, systemImage: preset.icon).frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                    HStack {
+                        ForEach(["back", "repeat", "next", "stop"], id: \.self) { step in
+                            Button(step.capitalized) { state.link.event("step", step) }
+                                .buttonStyle(.bordered)
+                                .frame(maxWidth: .infinity)
+                        }
+                    }
+                } header: {
+                    Text("Task")
+                } footer: {
+                    Text("Tells the Mac brain what you're doing, so it watches for the right things. Step buttons move through a step-by-step guide.")
+                }
+
                 Section("Debug: expressions") {
                     ForEach(Expression.allCases) { e in
                         Button(e.label) { state.setExpression(e) }
@@ -132,6 +155,11 @@ struct SettingsView: View {
             .toolbar { Button("Done") { dismiss() } }
         }
     }
+
+    private static let presets: [(id: String, name: String, icon: String)] = [
+        ("pc_build", "PC build", "desktopcomputer"), ("soldering", "Soldering", "flame"),
+        ("print_check", "3D print", "cube"), ("study", "Study", "book"),
+    ]
 
     private var linkReadout: String {
         switch state.link.status {
