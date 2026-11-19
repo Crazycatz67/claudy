@@ -1,0 +1,28 @@
+{
+ "_how_to_edit": "One entry per task preset (H8). The phone sends `event task` with the preset name (pc_build, soldering, print_check, study). 'task' is what Claudy thinks you are doing; 'watch' is added to every automatic check; 'ask' is added to every question; 'guide' (optional) is a step list in ~/.claudy/guides/<name>.txt for the step coach. Change the words freely; keep the quotes and commas.",
+ "pc_build": {
+  "label": "PC build",
+  "task": "building a desktop PC",
+  "watch": "Watch for: touching parts without grounding first, forcing a CPU or RAM stick in at an angle, bent CPU socket pins, the cooler's protective film left on, a cable left unplugged before closing the case, drinks near the open case, screws dropped onto the motherboard.",
+  "ask": "Name parts by their real names (motherboard, PSU, M.2 slot) and say where they are in the picture.",
+  "guide": "pc_build"
+ },
+ "soldering": {
+  "label": "Soldering",
+  "task": "soldering electronics",
+  "watch": "Watch for: the iron left out of its stand or left on with nobody working, fingers near the hot tip, cold or blobby joints, solder bridges between pins, flux fumes with the face too close, loose wire offcuts on the board, a drink near the iron.",
+  "ask": "When judging a joint, say whether it looks shiny and cone-shaped or dull and blobby."
+ },
+ "print_check": {
+  "label": "3D print check",
+  "task": "checking a 3D print in progress",
+  "watch": "Watch for: spaghetti or loose strands, the print coming off the bed, warped corners, the nozzle dragging or clogging, the filament running out or tangling, anything touching the moving print head.",
+  "ask": "Say how far along the print looks and whether it is safe to leave it running."
+ },
+ "study": {
+  "label": "Study",
+  "task": "studying at his desk",
+  "watch": "Watch for: a worked answer with a clear mistake on the page, the phone being picked up for a long time instead of studying. Never interrupt to praise; only warn about clear mistakes.",
+  "ask": "Explain like a patient tutor: give a hint first, not the whole answer, unless he asks for the answer."
+ }
+}

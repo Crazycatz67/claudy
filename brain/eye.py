@@ -12,7 +12,8 @@ While it runs:
   - Type a question in the Terminal and press Enter. Claude answers out loud
     from what Claudy has already seen. No posing for photos.
 
-Typed commands:   sleep | wake | watch on | watch off | task: <what you're doing> | quit
+Typed commands:   sleep | wake | watch on | watch off | task: <what you're doing or a preset> | quit
+                  presets | guide: <name> | next | back | skip | guide off | open/run/search ... (asks first)
 Keys in the video window:   space = sleep/wake,  q = quit
 """
 import argparse
@@ -20,6 +21,7 @@ import collections
 import os
 import platform
 import queue
+import secrets
 import shutil
 import subprocess
 import sys
@@ -31,6 +33,8 @@ import numpy as np
 
 from common import (BEST, KEYS, LATEST, NOTES, SEND, STATE, HOME, ago, read_json,
                     save_jpg, shrink, write_json)
+import actions
+from assistant import MODE_HINTS, Coach, Session, load_presets, minutes_in, mode_for
 
 # --- tuning: change these if it is too chatty or too quiet -------------------
 MOVE = 0.012        # share of the picture that must change to count as "moving"
@@ -44,14 +48,14 @@ MAX_NOTES = 20
 
 CHECK_PROMPT = """You are Claudy, a small desk robot that watches Farhan work through a camera and helps him like a sharp, friendly lab partner.
 What Farhan is doing: {task}
-Your notes so far (oldest first):
+{extra}Your notes so far (oldest first):
 {notes}
 Use the Read tool to look at these camera frames (oldest first, the last one is now):
 {frames}
-Reply in exactly two lines:
+Reply in exactly {lines} lines:
 NOTE: one short sentence saying what he is doing right now.
 SAY: a short warning to say out loud if you see a mistake, a safety risk or a step he probably missed. Otherwise NONE.
-Only warn when you are fairly sure. Never comment on things that are fine."""
+{step}Only warn when you are fairly sure. Never comment on things that are fine."""
 
 ASK_PROMPT = """You are Claudy, a small desk robot that watches Farhan work through a camera and helps him like a sharp, friendly lab partner.
 What Farhan is doing: {task}
@@ -92,6 +96,13 @@ class Eye:
         self.link = None            # PhoneLink when --camera phone
         self.pending_device = None  # (name, address, answered Event, [answer]) waiting for yes/no
         self.text_seen = (0.0, [])  # (time, lines) the phone last read on-device
+        self.presets = load_presets()
+        self.preset = None          # name of the preset in use, or None for free text
+        self.coach = Coach()        # step coach (H1)
+        self.session = Session()    # session folder (H3, H10)
+        self.answers = collections.deque(maxlen=10)   # {t, q, a} for the remote page
+        self.confirms = {}          # confirm id -> (answered Event, [answer]) waiting for the phone
+        self.remote = None          # RemotePage with --remote
 
     # ---- camera -------------------------------------------------------------
     def open_camera(self):
@@ -154,6 +165,7 @@ class Eye:
         self.key_n += 1
         save_jpg(path, best[1], max_side=1600)
         self.keyframes.append((best[0], str(path)))
+        self.session.add_keyframe(best[0], best[1], best[2])
         self.save_state()
 
     def step(self, frame, now: float):
@@ -183,9 +195,15 @@ class Eye:
             self.active_since = None
 
     # ---- talking to Claude ------------------------------------------------------
-    def frames_for(self, kind: str, point=None):
-        """Pick what Claude sees: recent keyframes plus the clearest frame of the last 2 s."""
+    def frames_for(self, kind: str, point=None, mode="ask", question=""):
+        """Pick what Claude sees: recent keyframes plus the clearest frame of the last 2 s.
+        Desk memory sees keyframes spread over the session; what-changed sees one earlier keyframe."""
         keep = list(self.keyframes)[-(2 if kind == "check" else 3):]
+        if mode == "memory":
+            keep = self.session.history(8)
+        elif mode == "changed":
+            earlier = self.session.since(minutes_in(question))
+            keep = [earlier] if earlier else []
         out = []
         for i, (t, p) in enumerate(keep):
             dst = SEND / f"{kind}_{i}.jpg"
@@ -233,22 +251,27 @@ class Eye:
             if kind == "ask":
                 self.to_phone("face", state="thinking")
                 self.to_phone("haptic", pattern="heartbeat")
-            frames = self.frames_for(kind, point)
+            mode = mode_for(question) if kind == "ask" else "check"
+            if mode == "step" and not self.coach.current:
+                mode = "ask"
+            frames = self.frames_for(kind, point, mode, question or "")
             if frames:
                 self.to_phone("sending")   # privacy rule: the photo eyes flash before Claude sees a frame
             listing = "\n".join(f"- {p} ({ago(t)})" for t, p in frames) or "- (no frames yet)"
             notes = "\n".join(f"- {n['text']} ({ago(n['t'])})" for n in self.notes[-10:]) or "- (none yet)"
             if kind == "check":
-                reply = self.run_claude(CHECK_PROMPT.format(task=self.task, notes=notes, frames=listing),
-                                        self.args.watch_model)
+                reply = self.run_claude(self.check_prompt(notes, listing), self.args.watch_model)
                 note, say = self.parse_check(reply)
                 if note:
                     self.add_note(note)
                 if say:
                     self.to_phone("haptic", pattern="attention")
+                    self.answers.append({"t": time.time(), "q": "(watching)", "a": say})
                     self.speak(say, face="concerned")
                 elif reply.startswith("ERROR"):
                     print("\n" + reply)
+                if self.coach.current and any(l.upper().replace(" ", "").startswith("STEP:DONE") for l in reply.splitlines()):
+                    self.step_done()
             else:
                 self.last_reply = "Thinking..."
                 extra = ""
@@ -257,14 +280,25 @@ class Eye:
                 seen_t, lines = self.text_seen
                 if lines and time.time() - seen_t < 10:
                     extra += " (Text the phone just read in view: " + " / ".join(lines)[:500] + ")"
+                hint = self.ask_hint(mode)
+                if hint:
+                    extra += " (" + hint + ")"
                 reply = self.run_claude(ASK_PROMPT.format(task=self.task, notes=notes, frames=listing,
                                                           question=question + extra), self.args.ask_model)
                 if reply.startswith("ERROR"):
                     print("\n" + reply)
                     self.to_phone("face", state="concerned")
                     self.to_phone("say", text="Sorry, I could not get an answer.", quiet=True)
+                elif mode == "step":
+                    first, _, rest = reply.strip().partition("\n")
+                    if first.strip().upper().rstrip(".!").replace(" ", "") == "DONE":
+                        self.step_done()
+                    else:   # the coach refuses to move on until the step looks done
+                        self.answers.append({"t": time.time(), "q": question, "a": rest.strip() or reply})
+                        self.speak(rest.strip() or "That step does not look done yet.", face="concerned")
                 else:
                     self.add_note(f"Farhan asked: {question}")
+                    self.answers.append({"t": time.time(), "q": question, "a": reply})
                     self.speak(reply)
             self.busy = False
 
@@ -280,7 +314,137 @@ class Eye:
             say = ""
         return note, say
 
+    def check_prompt(self, notes: str, listing: str) -> str:
+        p = self.presets.get(self.preset) or {}
+        extra = (p.get("watch", "").strip() + "\n") if p.get("watch") else ""
+        step = ""
+        if self.coach.current:
+            extra += f"He is following a guide. The current step is: {self.coach.current}\n"
+            step = "STEP: DONE if the current step now looks finished in the last frame, otherwise NOT YET.\n"
+        return CHECK_PROMPT.format(task=self.task, notes=notes, frames=listing, extra=extra,
+                                   lines="three" if step else "two", step=step)
+
+    def ask_hint(self, mode: str) -> str:
+        hint = MODE_HINTS.get(mode, "")
+        if mode == "step":
+            hint = (f"He is following a guide. The current step is: {self.coach.current}. Look at the last frame "
+                    "and decide if this step is finished. Reply with DONE or NOT YET alone on the first line; "
+                    "if not done, add one short sentence saying what is still missing.")
+        p = self.presets.get(self.preset) or {}
+        if p.get("ask"):
+            hint = (hint + " " + p["ask"]).strip()
+        return hint
+
+    # ---- presets (H8) and the step coach (H1) -------------------------------------
+    def set_task(self, text: str):
+        """`task: ...` typed or `event task` from the phone: a preset name, 'guide:<name>', or free text."""
+        text = text.strip()
+        key = text.lower().replace(" ", "_").replace("-", "_")
+        if text.lower().startswith("guide:"):
+            return self.start_guide(text[6:].strip())
+        if key in self.presets:
+            p = self.presets[key]
+            self.preset, self.task = key, p.get("task", text)
+            self.add_note(f"Preset: {p.get('label', key)}")
+            print(f"\nPreset set: {p.get('label', key)} ({self.task})")
+            if p.get("guide") and self.coach.load(p["guide"]):
+                self.say_step()
+            else:
+                self.speak(f"Okay, {p.get('label', key)} mode.", face="happy")
+        else:
+            self.preset, self.task = None, text
+            self.add_note(f"New task: {self.task}")
+            print(f"\nTask set: {self.task}")
+        self.save_state()
+
+    def start_guide(self, name: str):
+        if name.lower() in ("off", "stop", "none", ""):
+            self.coach.stop()
+            return self.speak("Guide stopped.", face="idle")
+        if self.coach.load(name):
+            self.add_note(f"Started guide {self.coach.name}")
+            self.say_step()
+        else:
+            self.speak(f"I could not find a guide called {name}. Put it in ~/.claudy/guides as {name}.txt.", face="concerned")
+
+    def say_step(self):
+        c = self.coach
+        if c.current is None:
+            self.add_note(f"Finished guide {c.name}")
+            self.speak(f"That was the last step of {c.name}. Well done!", face="happy")
+            c.stop()
+        else:
+            self.to_phone("haptic", pattern="tap")
+            self.speak(f"Step {c.i + 1} of {len(c.steps)}: {c.current}", face="happy")
+
+    def step_done(self):
+        self.add_note(f"Step done: {self.coach.current}")
+        self.coach.advance()
+        self.say_step()
+
+    def step_command(self, word: str):
+        """next (checked by Claude first), skip (move on anyway), back, repeat, stop."""
+        word = word.strip().lower()
+        if not self.coach.name:
+            return self.speak("No guide is running. Choose one with guide: <name>.", face="idle")
+        if word == "next":
+            self.jobs.put(("ask", "next step", None))
+        elif word == "skip":
+            self.coach.advance()
+            self.say_step()
+        elif word == "back":
+            self.coach.back()
+            self.say_step()
+        elif word in ("stop", "off"):
+            self.start_guide("off")
+        else:
+            self.say_step()
+
+    # ---- running things on the Mac (C5) -------------------------------------------
+    def handle_text(self, text: str, point=None):
+        """A question from any source. Requests to open or run something go to the allowlist instead."""
+        act = actions.parse(text) if point is None else None
+        if act is None:
+            self.jobs.put(("ask", text, point))
+        else:
+            threading.Thread(target=self.run_action, args=(act,), daemon=True).start()
+
+    def run_action(self, act):
+        if act.problem:
+            return self.speak(act.problem, face="concerned")
+        if not self.confirm(act.say):
+            return self.speak("Okay, I won't.", face="idle")
+        result = act.run()
+        self.add_note(f"Ran on the Mac: {act.kind} {act.target}")
+        self.answers.append({"t": time.time(), "q": act.say, "a": result})
+        self.speak(result, face="happy" if not result.startswith(("That", "The script")) else "concerned")
+
+    def confirm(self, text: str, timeout: float = 60) -> bool:
+        """Say what will run and wait for a yes: the phone's card if one is connected, else the Terminal."""
+        if self.link and self.link.connected:
+            cid = secrets.token_hex(4)
+            answered, answer = threading.Event(), [False]
+            self.confirms[cid] = (answered, answer)
+            self.to_phone("haptic", pattern="attention")
+            self.speak(text, face="listening")
+            self.to_phone("confirm", id=cid, text=text)
+            answered.wait(timeout)
+            self.confirms.pop(cid, None)
+            return answer[0]
+        return self.ask_yes_no(f"{text} Type yes or no: ", timeout)
+
+    def ask_yes_no(self, prompt: str, timeout: float) -> bool:
+        """The typing thread hands the next line it reads to whoever is waiting here."""
+        answered, answer = threading.Event(), [False]
+        self.pending_device = (prompt, "", answered, answer)
+        print("\n" + prompt, end="", flush=True)
+        if not answered.wait(timeout):
+            print("\nNo answer, so that is a no.")
+        self.pending_device = None
+        return answer[0]
+
     def add_note(self, text: str):
+        self.session.add_note(time.time(), text)
         self.notes.append({"t": time.time(), "text": text})
         self.notes = self.notes[-MAX_NOTES:]
         write_json(NOTES, self.notes)
@@ -302,13 +466,8 @@ class Eye:
 
     def approve_device(self, name: str, address: str) -> bool:
         """Called by the link for a device it has never seen; the typing thread takes the answer."""
-        answered, answer = threading.Event(), [False]
-        self.pending_device = (name, address, answered, answer)
-        print(f"\nNew device '{name}' at {address} wants to be Claudy's head. Type yes or no: ", end="", flush=True)
-        if not answered.wait(110):   # the link refuses after 120 s; let go of the question first
-            print("\nNo answer, so the device was refused.")
-        self.pending_device = None
-        return answer[0]
+        # the link refuses after 120 s; let go of the question first
+        return self.ask_yes_no(f"New device '{name}' at {address} wants to be Claudy's head. Type yes or no: ", 110)
 
     def on_phone(self, msg: dict):
         kind = msg.get("type")
@@ -321,28 +480,63 @@ class Eye:
             print(f"\nPhone asks: {msg['text']}" + (f"  (tapped {point})" if point else ""))
             if not self.awake:
                 self.set_awake(True)
-            self.jobs.put(("ask", str(msg["text"]).strip(), point))
+            self.handle_text(str(msg["text"]).strip(), point)
         elif kind == "event":
             name = msg.get("name")
             if name in ("sleep", "wake"):
                 self.set_awake(name == "wake")
             elif name == "task" and str(data or "").strip():
-                self.task = str(data).strip()
-                self.add_note(f"New task: {self.task}")
-                print(f"\nTask set from the phone: {self.task}")
+                self.set_task(str(data))
+            elif name == "step" and isinstance(data, str):
+                self.step_command(data)
+            elif name == "confirm" and isinstance(data, dict):
+                waiting = self.confirms.get(str(data.get("id")))
+                if waiting:
+                    waiting[1][0] = str(data.get("answer", "")).strip().lower() in ("yes", "y", "true")
+                    waiting[0].set()
+                else:
+                    print(f"\nPhone answered a confirm that is not waiting: {data}")
             elif name in ("watch_pause", "watch_resume"):   # open-palm gesture on the phone
                 self.watch = name == "watch_resume"
                 print(f"\nWatching {'on' if self.watch else 'paused'} (palm gesture)")
-            elif name in ("mode", "gesture", "shake", "confirm"):
+            elif name in ("mode", "gesture", "shake"):
                 print(f"\nPhone: {name} {data if data is not None else ''}")
         elif kind == "text_seen" and isinstance(msg.get("lines"), list):
             self.text_seen = (time.time(), [str(x) for x in msg["lines"]][:20])
         elif kind == "photo":
+            self.session.add_photo(msg.get("path"))
             print(f"\nPhoto from the phone saved: {msg.get('path')}")
 
     def save_state(self):
         write_json(STATE, {"t": time.time(), "awake": self.awake, "task": self.task, "watch": self.watch,
+                           "preset": self.preset, "session": str(self.session.dir or ""),
                            "keyframes": [{"t": t, "path": p} for t, p in self.keyframes]})
+
+    def page_state(self) -> dict:
+        return {"awake": self.awake, "busy": self.busy, "task": self.task, "watch": self.watch,
+                "preset": self.preset, "step": self.coach.status() if self.coach.name else "",
+                "phone": self.link.device if self.link and self.link.connected else "",
+                "answers": list(self.answers)}
+
+    def page_command(self, name: str, text: str):
+        print(f"\nRemote page: {name} {text}")
+        if name in ("sleep", "wake"):
+            self.set_awake(name == "wake")
+        elif name == "ask":
+            if not self.awake:
+                self.set_awake(True)
+            self.handle_text(text)
+
+    def end_session(self, session, wait=False):
+        """Write the session folder (summary by the small model) without holding up sleep."""
+        def finish():
+            d = session.end(lambda prompt: self.run_claude(prompt, self.args.watch_model))
+            if d:
+                print(f"\nSession saved: {d}")
+        if wait:
+            finish()
+        else:
+            threading.Thread(target=finish, daemon=True).start()
 
     # ---- typed commands ----------------------------------------------------------
     def typing(self):
@@ -352,7 +546,7 @@ class Eye:
             except (EOFError, KeyboardInterrupt):
                 break
             low = line.lower()
-            if self.pending_device:
+            if self.pending_device:   # a yes/no question is waiting (new device or a Mac command)
                 _, _, answered, answer = self.pending_device
                 answer[0] = low in ("y", "yes")
                 answered.set()
@@ -369,15 +563,24 @@ class Eye:
                 self.watch = low.endswith("on")
                 print(f"Watching on its own: {'on' if self.watch else 'off'}")
             elif low.startswith("task:"):
-                self.task = line[5:].strip()
-                self.add_note(f"New task: {self.task}")
-                print(f"Task set: {self.task}")
+                self.set_task(line[5:])
+            elif low == "presets":
+                print("Presets (edit brain/presets.json): " + (", ".join(self.presets) or "(none)"))
+            elif low.startswith("guide:"):
+                self.start_guide(line[6:].strip())
+            elif low in ("next", "skip", "back", "repeat", "guide off") and self.coach.name:
+                self.step_command(low.split()[-1])
             elif not self.awake:
                 print("Claudy is asleep. Type 'wake' first.")
             else:
-                self.jobs.put(("ask", line, None))
+                self.handle_text(line)
 
     def set_awake(self, on: bool):
+        if on and not self.session.active:
+            self.session.start()
+        elif not on and self.session.active:
+            old, self.session = self.session, Session()
+            self.end_session(old)
         self.awake = on
         if on and self.cap is None:
             self.open_camera()
@@ -412,6 +615,15 @@ class Eye:
         if not shutil.which(self.claude):
             print("Note: Claude Code ('claude') was not found. Asking and watching will not work until it is installed.")
         self.open_camera()
+        self.session.start()
+        if self.task.lower().replace(" ", "_") in self.presets or self.task.lower().startswith("guide:"):
+            self.set_task(self.task)   # --task pc_build uses the preset
+        if self.args.remote:
+            from remote_page import RemotePage
+            self.remote = RemotePage(self.page_state, self.page_command, LATEST, port=self.args.remote_port,
+                                     pin=os.environ.get("CLAUDY_REMOTE_PIN"))
+            self.remote.start()
+            print(f"Remote page: http://{platform.node()}:{self.args.remote_port}  (same Wi-Fi only)  PIN {self.remote.pin}")
         threading.Thread(target=self.worker, daemon=True).start()
         threading.Thread(target=self.typing, daemon=True).start()
         print(__doc__.split("Typed commands:")[1].strip() if "Typed commands:" in __doc__ else "")
@@ -449,6 +661,9 @@ class Eye:
             self.close_camera()
             if self.link:
                 self.link.stop()
+            if self.remote:
+                self.remote.stop()
+            self.end_session(self.session, wait=True)
             cv2.destroyAllWindows()
             write_json(STATE, {"t": 0, "awake": False, "task": self.task, "watch": False, "keyframes": []})
 
@@ -463,6 +678,8 @@ def main():
     p.add_argument("--claude", default="claude", help="path to the Claude Code command")
     p.add_argument("--no-window", action="store_true", help="no video window")
     p.add_argument("--quiet", action="store_true", help="print answers instead of speaking them")
+    p.add_argument("--remote", action="store_true", help="serve the remote page (live view + controls) on your Wi-Fi")
+    p.add_argument("--remote-port", type=int, default=8766, help="port for the remote page")
     Eye(p.parse_args()).run()
 
 

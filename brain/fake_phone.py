@@ -6,6 +6,8 @@ message the Mac sends back. It answers `ping` with `pong`, as the app must.
 
     python fake_phone.py                                   (Mac on this computer)
     python fake_phone.py --ask "what is this?" --point 0.5 0.5 --sleep
+    python fake_phone.py --event task pc_build --ask "open my project folder" --confirm yes
+    python fake_phone.py --ask "how many screws?" --more "what changed?" --more "next"
 """
 import argparse
 import json
@@ -38,6 +40,11 @@ def main():
     p.add_argument("--photo", action="store_true", help="also send one full-detail photo")
     p.add_argument("--sleep", action="store_true", help="send event sleep at the end")
     p.add_argument("--wait", type=float, default=15, help="seconds to keep listening after the ask")
+    p.add_argument("--event", nargs=2, action="append", default=[], metavar=("NAME", "DATA"),
+                   help="send `event` NAME with DATA (JSON if it parses, else text) after the frames")
+    p.add_argument("--more", action="append", default=[], help="another ask after the first is answered")
+    p.add_argument("--confirm", choices=["yes", "no", "none"], default="none",
+                   help="answer every `confirm` card like the phone does (none = ignore it)")
     args = p.parse_args()
 
     got = []
@@ -52,6 +59,10 @@ def main():
                     got.append(msg)
                     if msg.get("type") == "ping":
                         ws.send(json.dumps({"type": "pong", "t": msg.get("t")}))
+                    if msg.get("type") == "confirm" and args.confirm != "none":
+                        reply = {"type": "event", "name": "confirm", "data": {"id": msg.get("id"), "answer": args.confirm}}
+                        ws.send(json.dumps(reply))
+                        print(f"-> {json.dumps(reply)}", flush=True)
                     print(f"<- {json.dumps(msg)}", flush=True)
             except ConnectionClosed as e:
                 print(f"connection closed: {e.rcvd.code if e.rcvd else '?'} {e.rcvd.reason if e.rcvd else ''}")
@@ -71,15 +82,32 @@ def main():
             ws.send(json.dumps({"type": "photo", "id": "test1", "w": 1280, "h": 720, "distance_cm": None}))
             ws.send(make_frame(99, 99))
             print("-> photo test1")
-        if args.ask:
-            ask = {"type": "ask", "text": args.ask}
-            if args.point:
+        def says():
+            return sum(m.get("type") == "say" for m in got)
+
+        for name, data in args.event:
+            try:
+                data = json.loads(data)
+            except ValueError:
+                pass
+            before = says()
+            ws.send(json.dumps({"type": "event", "name": name, "data": data}))
+            print(f"-> event {name} {json.dumps(data)}")
+            end = time.time() + 2
+            while time.time() < end and says() == before:
+                time.sleep(0.1)
+        for i, text in enumerate(([args.ask] if args.ask else []) + args.more):
+            ask = {"type": "ask", "text": text}
+            if args.point and i == 0:
                 ask["point"] = {"x": args.point[0], "y": args.point[1]}
+            before = says()
             ws.send(json.dumps(ask))
             print(f"-> {json.dumps(ask)}")
-        end = time.time() + args.wait
-        while time.time() < end and not any(m.get("type") == "say" for m in got):
-            time.sleep(0.2)
+            end = time.time() + args.wait
+            # A Mac command speaks its question first, then the result: wait for the second say.
+            need = 2 if args.confirm != "none" and any(text.lower().startswith(w) for w in ("open", "run", "search", "go to")) else 1
+            while time.time() < end and says() < before + need:
+                time.sleep(0.2)
         time.sleep(1)
         if args.sleep:
             ws.send(json.dumps({"type": "event", "name": "sleep", "data": None}))
