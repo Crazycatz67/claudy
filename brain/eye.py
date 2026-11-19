@@ -530,7 +530,7 @@ class Eye:
     def end_session(self, session, wait=False):
         """Write the session folder (summary by the small model) without holding up sleep."""
         def finish():
-            d = session.end(lambda prompt: self.run_claude(prompt, self.args.watch_model))
+            d = session.end(lambda prompt: self.run_claude(prompt, self.args.ask_model))
             if d:
                 print(f"\nSession saved: {d}")
         if wait:
@@ -674,7 +674,7 @@ def main():
     p.add_argument("--task", default="working at his desk", help="what you are doing, e.g. 'building a PC'")
     p.add_argument("--no-watch", action="store_true", help="only answer questions, never speak up on its own")
     p.add_argument("--watch-model", default="haiku", help="model for the quick automatic checks")
-    p.add_argument("--ask-model", default="", help="model for your questions (blank = Claude Code's default)")
+    p.add_argument("--ask-model", default="claude-opus-5-5", help="model for your questions and session summaries (default Opus 5.5; blank = Claude Code's default)")
     p.add_argument("--claude", default="claude", help="path to the Claude Code command")
     p.add_argument("--no-window", action="store_true", help="no video window")
     p.add_argument("--quiet", action="store_true", help="print answers instead of speaking them")
