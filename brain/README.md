@@ -130,8 +130,9 @@ At the top of `eye.py`:
 
 - Too chatty: raise `COOLDOWN_S` (seconds between automatic checks, default 25).
 - Misses actions: lower `MOVE`. Triggers on nothing: raise it.
-- Automatic checks use the fast `haiku` model. If Claude Code rejects that name, run
-  with `--watch-model ""` to use its default model.
+- Models: your questions and session summaries use Opus 5.5 (`--ask-model`), automatic
+  checks use Sonnet 5.5 (`--watch-model`). If you hit your Claude plan's limits, run with
+  `--watch-model haiku`. If Claude Code rejects a model name, pass `""` to use its default.
 
 ## If something goes wrong
 
