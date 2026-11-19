@@ -25,25 +25,45 @@ final class AppState {
     private(set) var isAwake = true
     private(set) var expression: Expression = .idle
     private(set) var reaction: Expression?          // short reactions on top of the mood
-    private(set) var widget: Widget = .face
+    var widget: Widget = .face
     private(set) var isDimmed = false
     private(set) var blink: CGFloat = 1             // 1 = open, near 0 = mid-blink
-    private(set) var look: CGPoint = .zero          // where the eyes point, -1...1
+    var look: CGPoint = .zero          // where the eyes point, -1...1
     private(set) var burnInShift: CGSize = .zero    // tiny slow shift so pixels don't burn in
     private(set) var timerEnd: Date?
     private(set) var timerTotal: TimeInterval = 0
     private(set) var lastEvent = "started"
-    private(set) var cameraOn = false                // Follow me: selfie camera running
-    private(set) var seesFace = false
-    private(set) var faceChecksPerSecond = 0
     var showSettings = false
     var crosshair = CGPoint(x: 0.5, y: 0.5)
 
+    // Camera and Mac brain (see AppState+Brain.swift)
+    var mode: CameraMode = .buddy
+    var cameraOn = false                 // camera running (iOS green dot on)
+    var cameraSide: CameraSide?
+    var seesFace = false
+    var faceChecksPerSecond = 0
+    var photoFlash = false               // eyes flash red while a frame goes to Claude
+    var caption: String?                 // what Claudy last said, shown as text
+    var confirmCard: ConfirmCard?        // yes/no card before the Mac runs anything
+    var lenses: [CameraService.Lens] = []
+    var zoom: CGFloat = 1
+    var pointMark: CGPoint?              // where you tapped in Inspect mode (0...1)
+    var lightColor: Color?               // screen light set by the Mac
+    var isListening = false              // microphone on (hold to talk)
+    var heard = ""                       // words heard so far
+
     @ObservationIgnored let haptics = Haptics()
     @ObservationIgnored let motion = MotionSensor()
-    @ObservationIgnored let tracker = FaceTracker()
-    @ObservationIgnored private var followEnabled = false
-    @ObservationIgnored private var sceneActive = true
+    @ObservationIgnored let camera = CameraService()
+    @ObservationIgnored let link = BrainLink()
+    @ObservationIgnored let listener = Listener()
+    @ObservationIgnored let speaker = Speaker()
+    @ObservationIgnored var followEnabled = false
+    var shareEnabled = false             // sharing frames with the Mac (you switched it on)
+    @ObservationIgnored var sceneActive = true
+    @ObservationIgnored var lastFaceSeen = Date()
+    @ObservationIgnored var captionTask: Task<Void, Never>?
+    @ObservationIgnored var flashTask: Task<Void, Never>?
 
     /// What the face shows right now.
     var shown: Expression { isAwake ? (reaction ?? expression) : .sleeping }
@@ -64,8 +84,13 @@ final class AppState {
         motion.onFaceDown = { [weak self] in self?.sleep(because: "face down") }
         motion.onPickUp = { [weak self] in self?.wake(because: "picked up") }
         motion.start()
-        tracker.onFace = { [weak self] point in self?.faceMoved(point) }
-        tracker.onRate = { [weak self] rate in self?.faceChecksPerSecond = rate }
+        setUpBrain()
+        listener.onPartial = { [weak self] text in self?.heard = text }
+        speaker.onFinished = { [weak self] in
+            guard let self, self.expression == .thinking else { return }
+            self.setExpression(.idle)
+        }
+        IntentBridge.attach(self)
         Task { await blinkLoop() }
         Task { await driftLoop() }
         Task { await screenCareLoop() }
@@ -79,7 +104,12 @@ final class AppState {
     }
 
     func tap() {
-        if isAwake { touched(); haptics.play(.tap); note("tap") } else { wake(because: "tap") }
+        if !isAwake { wake(because: "tap"); return }
+        touched()
+        if isListening { finishTalking(); return }   // after the Action button: tap to send
+        if interruptSpeech() { return }               // tap while talking: stop
+        haptics.play(.tap)
+        note("tap")
     }
 
     func swipe(_ direction: SwipeDirection) {
@@ -89,7 +119,7 @@ final class AppState {
         case .down: sleep(because: "swipe down")
         case .left: stepWidget(1)
         case .right: stepWidget(-1)
-        case .up: break
+        case .up: setMode(mode == .buddy ? .inspect : .buddy)
         }
     }
 
@@ -115,6 +145,7 @@ final class AppState {
         motion.disarmPickUp()
         haptics.play(.tap)
         note("wake: \(why)")
+        link.event("wake")
         updateCamera()
     }
 
@@ -129,50 +160,11 @@ final class AppState {
         }
         motion.armPickUp()
         note("sleep: \(why)")
+        mode = .buddy
+        pointMark = nil
+        cancelTalking()       // microphone off too
+        link.event("sleep")
         updateCamera()   // asleep = camera off. Phase B3 adds the microphone here too.
-    }
-
-    // MARK: Follow me (selfie camera)
-
-    /// Turns Follow me on or off. Returns false if iOS camera permission was refused.
-    func setFollow(_ on: Bool) async -> Bool {
-        if on {
-            var allowed = AVCaptureDevice.authorizationStatus(for: .video) == .authorized
-            if !allowed { allowed = await AVCaptureDevice.requestAccess(for: .video) }
-            guard allowed else {
-                note("follow me: camera permission refused")
-                return false
-            }
-        }
-        followEnabled = on
-        note(on ? "follow me: on" : "follow me: off")
-        updateCamera()
-        return true
-    }
-
-    func setSceneActive(_ active: Bool) {
-        sceneActive = active
-        updateCamera()
-    }
-
-    /// The camera runs only while Follow me is on, Claudy is awake and the app is on screen.
-    private func updateCamera() {
-        let wanted = followEnabled && isAwake && sceneActive
-        guard wanted != cameraOn else { return }
-        cameraOn = wanted
-        if wanted { tracker.start() } else { tracker.stop() }
-    }
-
-    private func faceMoved(_ point: CGPoint?) {
-        guard let point, cameraOn else {
-            seesFace = false
-            return
-        }
-        seesFace = true
-        guard reaction != .dizzy else { return }
-        withAnimation(.easeOut(duration: 0.25)) {
-            look = CGPoint(x: point.x * 0.9, y: point.y * 0.7)
-        }
     }
 
     // MARK: Moods and reactions
@@ -183,7 +175,9 @@ final class AppState {
         haptics.play(.stop)
         react(.dizzy, seconds: 1.3)
         note("shake: cancelled")
-        // Phase B3 adds: stop talking and cancel the current request here.
+        cancelTalking()
+        link.event("shake")
+        if expression == .thinking { setExpression(.idle) }
         Task {
             for i in 0..<12 {   // eyes roll round once: a dizzy look
                 let angle = Double(i) * .pi / 3
@@ -207,7 +201,7 @@ final class AppState {
         if new == .thinking { startHeartbeat() }
     }
 
-    private func react(_ e: Expression, seconds: Double) {
+    func react(_ e: Expression, seconds: Double) {
         reactionTask?.cancel()
         if reaction != e { withAnimation(.spring(duration: 0.35)) { reaction = e } }
         reactionTask = Task {
@@ -313,6 +307,11 @@ final class AppState {
                 withAnimation(.easeInOut(duration: 1.5)) { isDimmed = true }
                 note("dimmed: idle")
             }
+            // Presence: with Follow me on and nobody seen for 2 minutes, go to sleep (camera off).
+            if isAwake, followEnabled, cameraSide == .front, !link.status.isConnected,
+               Date().timeIntervalSince(lastFaceSeen) > 120 {
+                sleep(because: "nobody there for 2 minutes")
+            }
             if ticks % 12 == 0 {
                 withAnimation(.easeInOut(duration: 3)) {
                     burnInShift = CGSize(width: .random(in: -10...10), height: .random(in: -10...10))
@@ -321,7 +320,7 @@ final class AppState {
         }
     }
 
-    private func note(_ text: String) {
+    func note(_ text: String) {
         lastEvent = "\(Date().formatted(date: .omitted, time: .standard))  \(text)"
     }
 }

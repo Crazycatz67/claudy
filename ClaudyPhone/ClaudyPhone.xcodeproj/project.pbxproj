@@ -186,8 +186,11 @@
 				DEVELOPMENT_TEAM = URDG9DN3G4;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Claudy;
-				INFOPLIST_KEY_NSCameraUsageDescription = "Claudy uses the selfie camera, only when Follow me is on, to find your face so its eyes can look at you. Frames stay on this phone.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Claudy listens only while you hold its face or press the Action button. Speech is turned into text on this phone.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Claudy turns what you say into text on this phone, so it can answer you.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Claudy uses the camera only when you switch it on (Follow me, Inspect, or sharing with your own Mac). It is always off while Claudy sleeps.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -218,8 +221,11 @@
 				DEVELOPMENT_TEAM = URDG9DN3G4;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Claudy;
-				INFOPLIST_KEY_NSCameraUsageDescription = "Claudy uses the selfie camera, only when Follow me is on, to find your face so its eyes can look at you. Frames stay on this phone.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Claudy listens only while you hold its face or press the Action button. Speech is turned into text on this phone.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Claudy turns what you say into text on this phone, so it can answer you.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Claudy uses the camera only when you switch it on (Follow me, Inspect, or sharing with your own Mac). It is always off while Claudy sleeps.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

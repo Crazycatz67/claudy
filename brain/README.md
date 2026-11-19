@@ -11,6 +11,8 @@ webcam), Python, and the Claude Max plan you already have.
 | `server.py` | Lets Claude Desktop see through Claudy: tools `look`, `whats_happening` and `zoom`. |
 | `find_camera.py` | Finds which camera number is your iPhone. |
 | `common.py` | Shared helpers. |
+| `phone_link.py` | Phase B2: the link the Claudy Phone app connects to (used by `eye.py --camera phone`). |
+| `fake_phone.py` | Pretends to be the phone app, for testing the Mac side without the iPhone. |
 
 ## Setup (one time, about 15 minutes)
 
@@ -22,7 +24,7 @@ Do these in order. Each step should work before you go to the next.
 cd ~/Developer/claudy/brain
 ```
 
-**2. Make a Python environment and install the three libraries.**
+**2. Make a Python environment and install the libraries.**
 
 ```
 python3 -m venv .venv
@@ -98,6 +100,29 @@ on my desk?" and it will use the tools.
 | `watch off` / `watch on` | stop or start speaking up on its own |
 | `sleep` / `wake` | camera off / on (or press space in the video window) |
 | `quit` | stop (or press q in the video window) |
+
+## Using the Claudy Phone app instead of Continuity Camera (phase B2)
+
+```
+python eye.py --camera phone
+```
+
+The Mac waits for the app and advertises itself on the Wi-Fi as "Claudy on <your Mac>".
+Open the app on the same Wi-Fi. The first time, the Terminal asks
+`New device '...' wants to be Claudy's head. Type yes or no:`; type `yes`. The Mac
+remembers it in `~/.claudy/devices.json` (delete a name there to forget it).
+
+- The app's camera now fills the Mac window, and questions you type go through the phone:
+  the phone shows the thinking face, flashes its eyes red when a frame goes to Claude, and
+  speaks the answer (with `--quiet` it only shows a caption).
+- Only phones on your own network can connect (addresses like 192.168.x.x or 10.x.x.x).
+- If macOS asks whether Python may accept incoming network connections, click Allow.
+- Camera numbers still work exactly as before.
+
+**Test without the iPhone.** In one Terminal run `python eye.py --camera phone --quiet`.
+In a second Terminal run `python fake_phone.py --point 0.5 0.5 --sleep`. Type `yes` in the
+first Terminal. The second one prints what the phone would receive: `welcome`, `face`,
+`sending`, `say` and `ping`. It uses made-up pictures, not a camera.
 
 ## Tuning
 

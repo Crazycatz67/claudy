@@ -6,10 +6,12 @@ import UIKit
 enum SwipeDirection { case up, down, left, right }
 
 struct TouchLayer: UIViewRepresentable {
-    var onTap: @MainActor () -> Void
+    var onTap: @MainActor (CGPoint) -> Void            // where you tapped, in points
     var onSwipe: @MainActor (SwipeDirection) -> Void
     var onPet: @MainActor () -> Void
     var onTwoFingerHold: @MainActor () -> Void
+    var onPinch: @MainActor (CGFloat) -> Void = { _ in } // zoom change since the last call
+    var onHold: @MainActor (Bool) -> Void = { _ in }     // one finger held still: true = start, false = let go
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -18,13 +20,17 @@ struct TouchLayer: UIViewRepresentable {
         view.backgroundColor = .clear
         view.isMultipleTouchEnabled = true
         let c = context.coordinator
-        let tap = UITapGestureRecognizer(target: c, action: #selector(Coordinator.tap))
+        let tap = UITapGestureRecognizer(target: c, action: #selector(Coordinator.tap(_:)))
         let pan = UIPanGestureRecognizer(target: c, action: #selector(Coordinator.pan(_:)))
         pan.maximumNumberOfTouches = 1
         let hold = UILongPressGestureRecognizer(target: c, action: #selector(Coordinator.hold(_:)))
         hold.numberOfTouchesRequired = 2
         hold.minimumPressDuration = 0.6
-        for recognizer in [tap, pan, hold] as [UIGestureRecognizer] {
+        let pinch = UIPinchGestureRecognizer(target: c, action: #selector(Coordinator.pinch(_:)))
+        let talk = UILongPressGestureRecognizer(target: c, action: #selector(Coordinator.talk(_:)))
+        talk.minimumPressDuration = 0.35
+        talk.allowableMovement = 20      // moving more than this is petting, not holding
+        for recognizer in [tap, pan, hold, pinch, talk] as [UIGestureRecognizer] {
             recognizer.delegate = c
             view.addGestureRecognizer(recognizer)
         }
@@ -51,7 +57,21 @@ struct TouchLayer: UIViewRepresentable {
 
         init(_ parent: TouchLayer) { self.parent = parent }
 
-        @objc func tap() { parent.onTap() }
+        @objc func tap(_ g: UITapGestureRecognizer) { parent.onTap(g.location(in: g.view)) }
+
+        @objc func talk(_ g: UILongPressGestureRecognizer) {
+            switch g.state {
+            case .began: parent.onHold(true)
+            case .ended, .cancelled, .failed: parent.onHold(false)
+            default: break
+            }
+        }
+
+        @objc func pinch(_ g: UIPinchGestureRecognizer) {
+            guard g.state == .changed else { return }
+            parent.onPinch(g.scale)
+            g.scale = 1
+        }
 
         @objc func hold(_ g: UILongPressGestureRecognizer) {
             if g.state == .began { parent.onTwoFingerHold() }

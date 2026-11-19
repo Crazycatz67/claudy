@@ -9,6 +9,7 @@ struct SettingsView: View {
     @AppStorage("motionSensitivity") private var sensitivity = 0.5
     @AppStorage("macAddress") private var macAddress = ""
     @AppStorage("followMe") private var followMe = false
+    @AppStorage("shareWithMac") private var shareWithMac = false
 
     private let presets = [Color.defaultEyeHex, "#FFFFFF", "#8AB4FF", "#B98CFF", "#FF8AD8", "#9CFF8A", "#FFD166"]
 
@@ -38,10 +39,15 @@ struct SettingsView: View {
 
                 Section {
                     Toggle("Follow me", isOn: $followMe)
+                    Toggle("Share camera with my Mac", isOn: $shareWithMac)
+                    Button(state.mode == .inspect ? "Back to Buddy mode" : "Inspect mode (back camera)") {
+                        state.setMode(state.mode == .inspect ? .buddy : .inspect)
+                        dismiss()
+                    }
                 } header: {
-                    Text("Selfie camera")
+                    Text("Camera")
                 } footer: {
-                    Text("The eyes look at you, using the selfie camera to find your face. Checked on this phone only, nothing is sent. The camera is off while Claudy sleeps.")
+                    Text("Follow me: the eyes look at you; your face is found on this phone only. Share: about 3 small pictures a second go to your own Mac over Wi-Fi, never anywhere else, and the eyes flash red whenever one goes to Claude. Inspect (or swipe up): the back camera looks at your work. The camera is always off while Claudy sleeps.")
                 }
 
                 Section("Voice") {
@@ -57,14 +63,15 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    TextField("e.g. 192.168.1.20", text: $macAddress)
+                    TextField("Mac address, e.g. 192.168.1.20", text: $macAddress)
                         .keyboardType(.URL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                    LabeledContent("Status", value: linkReadout)
                 } header: {
-                    Text("Mac brain address")
+                    Text("Mac brain")
                 } footer: {
-                    Text("Only needed from phase B2, if the app can't find the Mac by itself.")
+                    Text("Leave the address empty to find the Mac by itself. Type it only if that fails (some campus Wi-Fi blocks finding devices).")
                 }
 
                 Section("Debug: expressions") {
@@ -101,8 +108,18 @@ struct SettingsView: View {
         }
     }
 
+    private var linkReadout: String {
+        switch state.link.status {
+        case .off: "off"
+        case .searching: "looking for the Mac…"
+        case .connecting: "connecting…"
+        case .connected(let host): "connected to \(host)"
+        case .offline: "offline, retrying"
+        }
+    }
+
     private var followReadout: String {
-        guard state.cameraOn else { return "camera off" }
+        guard state.cameraOn, state.cameraSide == .front else { return "camera off" }
         return "\(state.seesFace ? "sees you" : "looking…"), \(state.faceChecksPerSecond) checks/s"
     }
 

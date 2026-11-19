@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Extra Info.plist entries merged with the generated ones: finding and talking to the Mac brain
+     on the local network only (docs/PROTOCOL.md). -->
+<plist version="1.0">
+<dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Claudy connects to the brain program on your own Mac over your Wi-Fi.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_claudy._tcp</string>
+	</array>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+</dict>
+</plist>

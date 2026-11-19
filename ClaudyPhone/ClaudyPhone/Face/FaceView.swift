@@ -1,5 +1,6 @@
-// FaceView.swift: the main screen. Shows the current widget (the face by default), listens for
-// gestures, dims when idle, and opens settings on a two-finger hold.
+// FaceView.swift: the main screen. Buddy mode shows the current widget (the face by default);
+// Inspect mode shows the back camera with the face in a corner bubble. Also shows the brain badge,
+// captions and the yes/no card, listens for gestures, dims when idle, and opens settings.
 import SwiftUI
 
 struct FaceView: View {
@@ -8,34 +9,46 @@ struct FaceView: View {
     @AppStorage("eyeColor") private var eyeHex = Color.defaultEyeHex
     @AppStorage("motionSensitivity") private var sensitivity = 0.5
     @AppStorage("followMe") private var followMe = false
+    @AppStorage("shareWithMac") private var shareWithMac = false
+    @AppStorage("macAddress") private var macAddress = ""
     @State private var dotsShownAt: Date?
 
     private var eyeColor: Color { Color(hex: eyeHex) ?? .cyan }
+    private var inspecting: Bool { state.mode == .inspect && state.isAwake }
 
     var body: some View {
         @Bindable var state = state
-        ZStack {
-            Color.black
-            TouchLayer(onTap: state.tap, onSwipe: state.swipe, onPet: state.pet,
-                       onTwoFingerHold: state.openSettings)
-            currentWidget
-                .transition(.opacity)
-            if state.widget != .face {
-                EyesView(color: eyeColor, compact: true)
-                    .frame(width: 110, height: 70)
-                    .padding(28)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+        GeometryReader { geo in
+            ZStack {
+                Color.black
+                if inspecting {
+                    CameraPreview(session: state.camera.session)
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
+                }
+                TouchLayer(onTap: { tapped(at: $0, in: geo.size) }, onSwipe: state.swipe,
+                           onPet: state.pet, onTwoFingerHold: state.openSettings,
+                           onPinch: { if inspecting { state.pinch(by: $0) } },
+                           onHold: { $0 ? state.startTalking() : state.finishTalking() })
+                if inspecting {
+                    InspectOverlay(color: eyeColor, size: geo.size)
+                } else {
+                    currentWidget.transition(.opacity)
+                    if state.widget != .face { cornerEyes }
+                }
+                if dotsShownAt != nil && !inspecting {
+                    PageDots(current: state.widget)
+                        .frame(maxHeight: .infinity, alignment: .bottom)
+                        .padding(.bottom, 30)
+                        .allowsHitTesting(false)
+                }
+                BrainBadge()
+                CaptionView()
+                if let card = state.confirmCard { ConfirmCardView(card: card) }
+                Color.black
+                    .opacity(state.isDimmed ? 0.7 : 0)
                     .allowsHitTesting(false)
             }
-            if dotsShownAt != nil {
-                PageDots(current: state.widget)
-                    .frame(maxHeight: .infinity, alignment: .bottom)
-                    .padding(.bottom, 30)
-                    .allowsHitTesting(false)
-            }
-            Color.black
-                .opacity(state.isDimmed ? 0.7 : 0)
-                .allowsHitTesting(false)
         }
         .ignoresSafeArea()
         .statusBarHidden()
@@ -49,10 +62,13 @@ struct FaceView: View {
         .onAppear {
             state.motion.sensitivity = sensitivity
             state.start()
-            applyFollow(followMe)
+            apply(followMe: followMe)
+            apply(share: shareWithMac)
         }
         .onChange(of: sensitivity) { _, value in state.motion.sensitivity = value }
-        .onChange(of: followMe) { _, on in applyFollow(on) }
+        .onChange(of: followMe) { _, on in apply(followMe: on) }
+        .onChange(of: shareWithMac) { _, on in apply(share: on) }
+        .onChange(of: macAddress) { _, address in state.link.restart(manualAddress: address) }
         .onChange(of: state.widget) { flashDots() }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { state.motion.start() }
@@ -71,11 +87,30 @@ struct FaceView: View {
         }
     }
 
-    /// Starts or stops Follow me; flips the switch back off if camera permission is refused.
-    private func applyFollow(_ on: Bool) {
-        Task {
-            if await !state.setFollow(on) { followMe = false }
-        }
+    private var cornerEyes: some View {
+        EyesView(color: eyeColor, compact: true)
+            .frame(width: 110, height: 70)
+            .padding(28)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            .allowsHitTesting(false)
+    }
+
+    /// In Inspect mode a tap points at that spot; otherwise it is a normal tap.
+    private func tapped(at location: CGPoint, in size: CGSize) {
+        guard inspecting else { state.tap(); return }
+        let picture = size.cameraPictureRect
+        guard picture.contains(location) else { state.tap(); return }
+        state.point(at: CGPoint(x: (location.x - picture.minX) / picture.width,
+                                y: (location.y - picture.minY) / picture.height))
+    }
+
+    /// Switches flip themselves back off if iOS camera permission is refused.
+    private func apply(followMe on: Bool) {
+        Task { if await !state.setFollow(on) { followMe = false } }
+    }
+
+    private func apply(share on: Bool) {
+        Task { if await !state.setShare(on) { shareWithMac = false } }
     }
 
     private func flashDots() {

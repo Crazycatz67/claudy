@@ -2,6 +2,7 @@
 
 Run it in Terminal on the Mac:
     python eye.py --task "building a PC"
+    python eye.py --camera phone      (use the Claudy Phone app instead of a camera number)
 
 While it runs:
   - It keeps the last minute of video and remembers the clear frames from
@@ -87,10 +88,23 @@ class Eye:
         self.last_sample = 0.0
         self.last_save = 0.0
         self.claude = shutil.which(args.claude) or args.claude
+        self.phone = args.camera == "phone"
+        self.link = None            # PhoneLink when --camera phone
+        self.pending_device = None  # (name, address, answered Event, [answer]) waiting for yes/no
+        self.text_seen = (0.0, [])  # (time, lines) the phone last read on-device
 
     # ---- camera -------------------------------------------------------------
     def open_camera(self):
         src = self.args.camera
+        if self.phone:
+            if self.link is None:
+                from phone_link import PhoneLink
+                self.link = PhoneLink(approve=self.approve_device, on_message=self.on_phone)
+                self.link.start()
+                print("Waiting for the Claudy Phone app. Open it on the same Wi-Fi.")
+            self.link.drop_frames()   # nothing seen while asleep may slip into the buffer
+            self.cap = self.link
+            return
         if src.isdigit():
             backend = cv2.CAP_AVFOUNDATION if platform.system() == "Darwin" else cv2.CAP_ANY
             cap = cv2.VideoCapture(int(src), backend)
@@ -103,6 +117,12 @@ class Eye:
         self.cap = cap
 
     def close_camera(self):
+        if self.phone:
+            # The link stays up so the phone can still wake Claudy; its frames are just not used.
+            self.cap = None
+            if self.link:
+                self.link.drop_frames()
+            return
         if self.cap:
             self.cap.release()
             self.cap = None
@@ -159,11 +179,11 @@ class Eye:
                 self.add_keyframe(self.last_move)
                 if self.watch and not self.busy and now - self.last_check >= COOLDOWN_S:
                     self.last_check = now
-                    self.jobs.put(("check", None))
+                    self.jobs.put(("check", None, None))
             self.active_since = None
 
     # ---- talking to Claude ------------------------------------------------------
-    def frames_for(self, kind: str):
+    def frames_for(self, kind: str, point=None):
         """Pick what Claude sees: recent keyframes plus the clearest frame of the last 2 s."""
         keep = list(self.keyframes)[-(2 if kind == "check" else 3):]
         out = []
@@ -172,9 +192,19 @@ class Eye:
             shutil.copyfile(p, dst)
             out.append((t, dst))
         best = self.best_since(time.time() - 2)
+        if point and self.buffer:
+            best = self.buffer[-1]   # a tap points at what is on screen now, not the sharpest older frame
         if best is not None and (kind == "ask" or not out):
             dst = SEND / f"{kind}_now.jpg"
-            save_jpg(dst, best[1], max_side=1600)
+            img = best[1]
+            if point:
+                img = img.copy()
+                h, w = img.shape[:2]
+                c = (int(float(point["x"]) * w), int(float(point["y"]) * h))
+                r = max(12, min(h, w) // 25)
+                cv2.circle(img, c, r + 3, (255, 255, 255), 3, cv2.LINE_AA)
+                cv2.circle(img, c, r, (0, 0, 255), 4, cv2.LINE_AA)
+            save_jpg(dst, img, max_side=1600)
             out.append((best[0], dst))
         return out
 
@@ -194,13 +224,18 @@ class Eye:
     def worker(self):
         while self.running:
             try:
-                kind, question = self.jobs.get(timeout=0.5)
+                kind, question, point = self.jobs.get(timeout=0.5)
             except queue.Empty:
                 continue
             if not self.awake:
                 continue
             self.busy = True
-            frames = self.frames_for(kind)
+            if kind == "ask":
+                self.to_phone("face", state="thinking")
+                self.to_phone("haptic", pattern="heartbeat")
+            frames = self.frames_for(kind, point)
+            if frames:
+                self.to_phone("sending")   # privacy rule: the photo eyes flash before Claude sees a frame
             listing = "\n".join(f"- {p} ({ago(t)})" for t, p in frames) or "- (no frames yet)"
             notes = "\n".join(f"- {n['text']} ({ago(n['t'])})" for n in self.notes[-10:]) or "- (none yet)"
             if kind == "check":
@@ -210,15 +245,24 @@ class Eye:
                 if note:
                     self.add_note(note)
                 if say:
-                    self.speak(say)
+                    self.to_phone("haptic", pattern="attention")
+                    self.speak(say, face="concerned")
                 elif reply.startswith("ERROR"):
                     print("\n" + reply)
             else:
                 self.last_reply = "Thinking..."
+                extra = ""
+                if point:
+                    extra += " (He tapped the spot marked with a red ring in the last frame.)"
+                seen_t, lines = self.text_seen
+                if lines and time.time() - seen_t < 10:
+                    extra += " (Text the phone just read in view: " + " / ".join(lines)[:500] + ")"
                 reply = self.run_claude(ASK_PROMPT.format(task=self.task, notes=notes, frames=listing,
-                                                          question=question), self.args.ask_model)
+                                                          question=question + extra), self.args.ask_model)
                 if reply.startswith("ERROR"):
                     print("\n" + reply)
+                    self.to_phone("face", state="concerned")
+                    self.to_phone("say", text="Sorry, I could not get an answer.", quiet=True)
                 else:
                     self.add_note(f"Farhan asked: {question}")
                     self.speak(reply)
@@ -241,11 +285,57 @@ class Eye:
         self.notes = self.notes[-MAX_NOTES:]
         write_json(NOTES, self.notes)
 
-    def speak(self, text: str):
+    def speak(self, text: str, face: str = "happy"):
         self.last_reply = text
         print(f"\nClaudy: {text}\nYou: ", end="", flush=True)
-        if shutil.which("say") and not self.args.quiet:
+        if self.link and self.link.connected:
+            # The phone is Claudy's head: it talks (or only captions with --quiet), the Mac stays silent.
+            self.to_phone("face", state=face)
+            self.to_phone("say", text=text, quiet=bool(self.args.quiet))
+        elif shutil.which("say") and not self.args.quiet:
             subprocess.Popen(["say", text])
+
+    # ---- the phone (only with --camera phone) -----------------------------------
+    def to_phone(self, type_: str, **fields):
+        if self.link:
+            self.link.send(type_, **fields)
+
+    def approve_device(self, name: str, address: str) -> bool:
+        """Called by the link for a device it has never seen; the typing thread takes the answer."""
+        answered, answer = threading.Event(), [False]
+        self.pending_device = (name, address, answered, answer)
+        print(f"\nNew device '{name}' at {address} wants to be Claudy's head. Type yes or no: ", end="", flush=True)
+        if not answered.wait(110):   # the link refuses after 120 s; let go of the question first
+            print("\nNo answer, so the device was refused.")
+        self.pending_device = None
+        return answer[0]
+
+    def on_phone(self, msg: dict):
+        kind = msg.get("type")
+        data = msg.get("data")
+        if kind == "hello":
+            self.link.send("welcome", brain_version="0.2", task=self.task, watch=self.watch)
+            self.to_phone("face", state="idle" if self.awake else "sleeping")
+        elif kind == "ask" and str(msg.get("text", "")).strip():
+            point = msg.get("point") if isinstance(msg.get("point"), dict) else None
+            print(f"\nPhone asks: {msg['text']}" + (f"  (tapped {point})" if point else ""))
+            if not self.awake:
+                self.set_awake(True)
+            self.jobs.put(("ask", str(msg["text"]).strip(), point))
+        elif kind == "event":
+            name = msg.get("name")
+            if name in ("sleep", "wake"):
+                self.set_awake(name == "wake")
+            elif name == "task" and str(data or "").strip():
+                self.task = str(data).strip()
+                self.add_note(f"New task: {self.task}")
+                print(f"\nTask set from the phone: {self.task}")
+            elif name in ("mode", "gesture", "shake", "confirm"):
+                print(f"\nPhone: {name} {data if data is not None else ''}")
+        elif kind == "text_seen" and isinstance(msg.get("lines"), list):
+            self.text_seen = (time.time(), [str(x) for x in msg["lines"]][:20])
+        elif kind == "photo":
+            print(f"\nPhoto from the phone saved: {msg.get('path')}")
 
     def save_state(self):
         write_json(STATE, {"t": time.time(), "awake": self.awake, "task": self.task, "watch": self.watch,
@@ -259,6 +349,11 @@ class Eye:
             except (EOFError, KeyboardInterrupt):
                 break
             low = line.lower()
+            if self.pending_device:
+                _, _, answered, answer = self.pending_device
+                answer[0] = low in ("y", "yes")
+                answered.set()
+                continue
             if not line:
                 continue
             if low in ("quit", "exit"):
@@ -277,12 +372,13 @@ class Eye:
             elif not self.awake:
                 print("Claudy is asleep. Type 'wake' first.")
             else:
-                self.jobs.put(("ask", line))
+                self.jobs.put(("ask", line, None))
 
     def set_awake(self, on: bool):
         self.awake = on
         if on and self.cap is None:
             self.open_camera()
+        self.to_phone("face", state="idle" if on else "sleeping")
         if not on:
             self.close_camera()
             self.buffer.clear()
@@ -296,6 +392,8 @@ class Eye:
     def draw(self, frame):
         view = shrink(frame, 960).copy() if frame is not None else np.zeros((540, 960, 3), np.uint8)
         state = ("THINKING" if self.busy else "AWAKE") if self.awake else "ASLEEP"
+        if self.phone:
+            state += f"  phone: {self.link.device if self.link and self.link.connected else 'not connected'}"
         col = (80, 200, 255) if self.busy else ((90, 220, 120) if self.awake else (120, 120, 120))
         cv2.rectangle(view, (0, 0), (view.shape[1], 34), (20, 20, 20), -1)
         cv2.putText(view, f"Claudy {state}  watch:{'on' if self.watch else 'off'}  task: {self.task[:40]}",
@@ -319,13 +417,18 @@ class Eye:
             while self.running:
                 now = time.time()
                 if self.awake and self.cap is not None:
-                    ok, frame = self.cap.read()
-                    if not ok:
-                        if not self.args.camera.isdigit():
-                            break  # test video finished
+                    ok, new = self.cap.read()   # the phone link waits up to 0.1 s for a frame
+                    if ok:
+                        frame = new
+                        self.step(frame, now)
+                    elif self.phone:
+                        if not self.link.connected:
+                            frame = None
+                    elif not self.args.camera.isdigit():
+                        break  # test video finished
+                    else:
                         time.sleep(0.05)
                         continue
-                    self.step(frame, now)
                 else:
                     frame = None
                     time.sleep(0.05)
@@ -336,18 +439,20 @@ class Eye:
                         break
                     if k == ord(" "):
                         self.set_awake(not self.awake)
-                elif not self.args.camera.isdigit():
+                elif not self.args.camera.isdigit() and not self.phone:
                     time.sleep(1 / 30)  # play test videos at real speed
         finally:
             self.running = False
             self.close_camera()
+            if self.link:
+                self.link.stop()
             cv2.destroyAllWindows()
             write_json(STATE, {"t": 0, "awake": False, "task": self.task, "watch": False, "keyframes": []})
 
 
 def main():
     p = argparse.ArgumentParser(description="Claudy's eye: watch through the iPhone camera.")
-    p.add_argument("--camera", default="1", help="camera number from find_camera.py (or a video file to test)")
+    p.add_argument("--camera", default="1", help="camera number from find_camera.py, 'phone' for the Claudy Phone app, or a video file to test")
     p.add_argument("--task", default="working at his desk", help="what you are doing, e.g. 'building a PC'")
     p.add_argument("--no-watch", action="store_true", help="only answer questions, never speak up on its own")
     p.add_argument("--watch-model", default="haiku", help="model for the quick automatic checks")

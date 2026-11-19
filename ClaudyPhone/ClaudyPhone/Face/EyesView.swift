@@ -9,7 +9,8 @@ struct EyesView: View {
     var body: some View {
         let mood = state.shown
         let shape = mood.eye
-        let tint = mood.color(base: color)
+        // Photo eyes: red for a moment whenever a picture goes to Claude.
+        let tint = state.photoFlash ? Color(red: 1, green: 0.15, blue: 0.2) : mood.color(base: color)
         GeometryReader { geo in
             let eyeW = min(geo.size.width * 0.27, geo.size.height * 0.28)
             let eyeH = eyeW * 1.35

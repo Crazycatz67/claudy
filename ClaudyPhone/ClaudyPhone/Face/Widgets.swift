@@ -10,7 +10,7 @@ struct LightWidget: View {
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            (white ? Color.white : Color(hue: hue, saturation: 0.55, brightness: 1))
+            (state.lightColor ?? (white ? Color.white : Color(hue: hue, saturation: 0.55, brightness: 1)))
                 .allowsHitTesting(false)
             HStack(spacing: 16) {
                 Button(white ? "Colour" : "White") {
