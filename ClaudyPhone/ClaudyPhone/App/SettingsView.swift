@@ -8,6 +8,7 @@ struct SettingsView: View {
     @AppStorage("eyeColor") private var eyeHex = Color.defaultEyeHex
     @AppStorage("motionSensitivity") private var sensitivity = 0.5
     @AppStorage("macAddress") private var macAddress = ""
+    @AppStorage("followMe") private var followMe = false
 
     private let presets = [Color.defaultEyeHex, "#FFFFFF", "#8AB4FF", "#B98CFF", "#FF8AD8", "#9CFF8A", "#FFD166"]
 
@@ -33,6 +34,14 @@ struct SettingsView: View {
                         }
                         .padding(.vertical, 4)
                     }
+                }
+
+                Section {
+                    Toggle("Follow me", isOn: $followMe)
+                } header: {
+                    Text("Selfie camera")
+                } footer: {
+                    Text("The eyes look at you, using the selfie camera to find your face. Checked on this phone only, nothing is sent. The camera is off while Claudy sleeps.")
                 }
 
                 Section("Voice") {
@@ -81,10 +90,29 @@ struct SettingsView: View {
                     TimelineView(.periodic(from: .now, by: 0.5)) { _ in
                         LabeledContent("Motion", value: state.motion.readout)
                     }
+                    LabeledContent("Follow me", value: followReadout)
+                    TimelineView(.periodic(from: .now, by: 2)) { _ in
+                        LabeledContent("Phone warmth", value: Self.warmth())
+                    }
                 }
             }
             .navigationTitle("Claudy settings")
             .toolbar { Button("Done") { dismiss() } }
+        }
+    }
+
+    private var followReadout: String {
+        guard state.cameraOn else { return "camera off" }
+        return "\(state.seesFace ? "sees you" : "looking…"), \(state.faceChecksPerSecond) checks/s"
+    }
+
+    private static func warmth() -> String {
+        switch ProcessInfo.processInfo.thermalState {
+        case .nominal: "normal"
+        case .fair: "a bit warm"
+        case .serious: "hot"
+        case .critical: "very hot"
+        @unknown default: "unknown"
         }
     }
 }

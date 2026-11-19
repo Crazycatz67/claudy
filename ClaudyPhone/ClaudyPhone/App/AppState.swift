@@ -1,5 +1,6 @@
 // AppState.swift: Claudy's shared state and behaviour: awake or asleep, mood, blinking,
 // eye drift, idle dimming, reactions (petting, shaking) and the timer.
+import AVFoundation
 import SwiftUI
 import Observation
 
@@ -32,11 +33,17 @@ final class AppState {
     private(set) var timerEnd: Date?
     private(set) var timerTotal: TimeInterval = 0
     private(set) var lastEvent = "started"
+    private(set) var cameraOn = false                // Follow me: selfie camera running
+    private(set) var seesFace = false
+    private(set) var faceChecksPerSecond = 0
     var showSettings = false
     var crosshair = CGPoint(x: 0.5, y: 0.5)
 
     @ObservationIgnored let haptics = Haptics()
     @ObservationIgnored let motion = MotionSensor()
+    @ObservationIgnored let tracker = FaceTracker()
+    @ObservationIgnored private var followEnabled = false
+    @ObservationIgnored private var sceneActive = true
 
     /// What the face shows right now.
     var shown: Expression { isAwake ? (reaction ?? expression) : .sleeping }
@@ -57,6 +64,8 @@ final class AppState {
         motion.onFaceDown = { [weak self] in self?.sleep(because: "face down") }
         motion.onPickUp = { [weak self] in self?.wake(because: "picked up") }
         motion.start()
+        tracker.onFace = { [weak self] point in self?.faceMoved(point) }
+        tracker.onRate = { [weak self] rate in self?.faceChecksPerSecond = rate }
         Task { await blinkLoop() }
         Task { await driftLoop() }
         Task { await screenCareLoop() }
@@ -106,6 +115,7 @@ final class AppState {
         motion.disarmPickUp()
         haptics.play(.tap)
         note("wake: \(why)")
+        updateCamera()
     }
 
     func sleep(because why: String) {
@@ -119,7 +129,50 @@ final class AppState {
         }
         motion.armPickUp()
         note("sleep: \(why)")
-        // Phase B2 adds: stop the camera and microphone here.
+        updateCamera()   // asleep = camera off. Phase B3 adds the microphone here too.
+    }
+
+    // MARK: Follow me (selfie camera)
+
+    /// Turns Follow me on or off. Returns false if iOS camera permission was refused.
+    func setFollow(_ on: Bool) async -> Bool {
+        if on {
+            var allowed = AVCaptureDevice.authorizationStatus(for: .video) == .authorized
+            if !allowed { allowed = await AVCaptureDevice.requestAccess(for: .video) }
+            guard allowed else {
+                note("follow me: camera permission refused")
+                return false
+            }
+        }
+        followEnabled = on
+        note(on ? "follow me: on" : "follow me: off")
+        updateCamera()
+        return true
+    }
+
+    func setSceneActive(_ active: Bool) {
+        sceneActive = active
+        updateCamera()
+    }
+
+    /// The camera runs only while Follow me is on, Claudy is awake and the app is on screen.
+    private func updateCamera() {
+        let wanted = followEnabled && isAwake && sceneActive
+        guard wanted != cameraOn else { return }
+        cameraOn = wanted
+        if wanted { tracker.start() } else { tracker.stop() }
+    }
+
+    private func faceMoved(_ point: CGPoint?) {
+        guard let point, cameraOn else {
+            seesFace = false
+            return
+        }
+        seesFace = true
+        guard reaction != .dizzy else { return }
+        withAnimation(.easeOut(duration: 0.25)) {
+            look = CGPoint(x: point.x * 0.9, y: point.y * 0.7)
+        }
     }
 
     // MARK: Moods and reactions
@@ -242,7 +295,7 @@ final class AppState {
     private func driftLoop() async {
         while true {
             try? await Task.sleep(for: .seconds(Double.random(in: 1.8...4.5)))
-            guard isAwake, reaction == nil else { continue }
+            guard isAwake, reaction == nil, !seesFace else { continue }   // following you instead
             let target = Double.random(in: 0...1) < 0.3
                 ? CGPoint.zero
                 : CGPoint(x: .random(in: -0.7...0.7), y: .random(in: -0.4...0.4))

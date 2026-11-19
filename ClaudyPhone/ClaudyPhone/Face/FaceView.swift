@@ -7,6 +7,7 @@ struct FaceView: View {
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("eyeColor") private var eyeHex = Color.defaultEyeHex
     @AppStorage("motionSensitivity") private var sensitivity = 0.5
+    @AppStorage("followMe") private var followMe = false
     @State private var dotsShownAt: Date?
 
     private var eyeColor: Color { Color(hex: eyeHex) ?? .cyan }
@@ -48,12 +49,15 @@ struct FaceView: View {
         .onAppear {
             state.motion.sensitivity = sensitivity
             state.start()
+            applyFollow(followMe)
         }
         .onChange(of: sensitivity) { _, value in state.motion.sensitivity = value }
+        .onChange(of: followMe) { _, on in applyFollow(on) }
         .onChange(of: state.widget) { flashDots() }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { state.motion.start() }
             if phase == .background { state.motion.stop() }
+            state.setSceneActive(phase == .active)
         }
     }
 
@@ -64,6 +68,13 @@ struct FaceView: View {
         case .timer: TimerWidget(color: eyeColor)
         case .radar: RadarWidget(color: eyeColor)
         case .crosshair: CrosshairWidget(color: eyeColor)
+        }
+    }
+
+    /// Starts or stops Follow me; flips the switch back off if camera permission is refused.
+    private func applyFollow(_ on: Bool) {
+        Task {
+            if await !state.setFollow(on) { followMe = false }
         }
     }
 
