@@ -673,7 +673,7 @@ def main():
     p.add_argument("--camera", default="1", help="camera number from find_camera.py, 'phone' for the Claudy Phone app, or a video file to test")
     p.add_argument("--task", default="working at his desk", help="what you are doing, e.g. 'building a PC'")
     p.add_argument("--no-watch", action="store_true", help="only answer questions, never speak up on its own")
-    p.add_argument("--watch-model", default="haiku", help="model for the quick automatic checks")
+    p.add_argument("--watch-model", default="claude-sonnet-5-5", help="model for the quick automatic checks (default Sonnet 5.5; use haiku to save plan limits)")
     p.add_argument("--ask-model", default="claude-opus-5-5", help="model for your questions and session summaries (default Opus 5.5; blank = Claude Code's default)")
     p.add_argument("--claude", default="claude", help="path to the Claude Code command")
     p.add_argument("--no-window", action="store_true", help="no video window")
